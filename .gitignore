@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+.tools/
+.runtime/
+playwright-report/
+test-results/
+.DS_Store
+
+.target/
+
+Tastellar.app/

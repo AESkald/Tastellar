@@ -1,0 +1,23 @@
+.transfer-panel-copy {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.7;
+  margin: 0 0 16px;
+}
+.transfer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.transfer-selected-file {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0 0 18px;
+}
+.transfer-confirmation-body {
+  padding: 24px;
+}
+.library-context-panel.transfer .transfer-panel {
+  padding: 17px 19px 28px;
+}

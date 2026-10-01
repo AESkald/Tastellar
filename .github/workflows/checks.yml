@@ -1,0 +1,29 @@
+name: Home foundation checks
+on:
+  push:
+  pull_request:
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: cargo test -p tastellar-domain -p tastellar-storage
+      - run: cargo check -p tastellar
+      - name: Install browser
+        run: PLAYWRIGHT_BROWSERS_PATH="$PWD/.tools/browsers" npx playwright install chromium
+      - name: Interface checks
+        run: |
+          npm run dev > .tools/preview.log 2>&1 &
+          for attempt in {1..30}; do
+            curl --silent --fail http://127.0.0.1:1420 > /dev/null && break
+            sleep 1
+          done
+          npm run test:e2e

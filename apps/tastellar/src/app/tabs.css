@@ -1,0 +1,58 @@
+.app-tab {
+  position: relative;
+}
+
+.tab-strip {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tab-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.app-tab > [role="tab"] {
+  cursor: grab;
+  min-width: 0;
+  user-select: none;
+}
+
+.app-tab > [role="tab"]:active {
+  cursor: grabbing;
+}
+
+.app-tab.dragging {
+  opacity: 0.38;
+}
+
+.app-tab.drop-before::before,
+.app-tab.drop-after::after {
+  position: absolute;
+  z-index: 3;
+  top: 2px;
+  bottom: 2px;
+  width: 4px;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 52%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+.app-tab.drop-before::before {
+  left: 2px;
+}
+
+.app-tab.drop-after::after {
+  right: 2px;
+}
+
+.app-tab.drop-before,
+.app-tab.drop-after {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}

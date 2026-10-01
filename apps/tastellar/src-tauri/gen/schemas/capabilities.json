@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Local Tastellar window and file chooser","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-save","core:window:allow-close","core:window:allow-destroy","core:window:allow-start-dragging","clipboard-manager:allow-write-text"]}}
