@@ -1,6 +1,6 @@
-# Tastellar 0.3 — macOS app
+# Tastellar 0.4 — macOS app
 
-A local personal media library with rating, score-tier rankings and duel-based ordering. Version 0.3 includes the profile, taste priorities, recommendation prompt, Library, Ranking, portable archives, workspace tabs and settings.
+A local personal media library with rating, score-tier rankings and duel-based ordering. Version 0.4 includes the profile, taste priorities, recommendation prompt, Library, Ranking, portable archives, workspace tabs and settings.
 
 ## Run the macOS app
 

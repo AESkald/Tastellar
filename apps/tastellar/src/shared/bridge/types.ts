@@ -6,6 +6,8 @@ export interface Preferences {
   textScale: number;
   reducedMotion: "system" | "on" | "off";
   graphics: "auto" | "low" | "medium" | "high" | "off";
+  scenesEnabled: boolean;
+  rememberSidebarsPerTab: boolean;
   restoreTabs: boolean;
   startupSection: Section;
   previousTabShortcut: string;
@@ -19,6 +21,9 @@ export interface WorkspaceTab {
   title: string;
   scrollTop: number;
   libraryView?: LibraryViewSnapshot | null;
+  /** Sidebar visibility snapshot used only while rememberSidebarsPerTab is on. */
+  folderOpen?: boolean | null;
+  detailsOpen?: boolean | null;
 }
 export interface LibraryViewFilters {
   mediaTypes: string[];
@@ -79,6 +84,8 @@ export const initialState = (): HomeState => ({
     textScale: 1,
     reducedMotion: "system",
     graphics: "auto",
+    scenesEnabled: true,
+    rememberSidebarsPerTab: true,
     restoreTabs: true,
     startupSection: "home",
     previousTabShortcut: "Alt+ArrowLeft",

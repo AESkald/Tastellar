@@ -12,7 +12,9 @@ The Library heading toolbar keeps the Import/export action beside the list-view 
 
 ## Main content
 
-Upper area: group scene, with collapse, motion and quality controls. Until the later 3D-scene milestone, show an accessible 2D collection overview with counts and score distribution in this space; do not render interactive 3D. Lower area: virtualized list in one of three modes:
+Upper area: interactive universe scene only on score groups 10–7, with collapse and quality controls (motion controls only where the scene animates). Keep the existing group arrows and sort control above the scene; do not duplicate navigation inside the scene window. The other score groups, Unrated, Plan to Watch, and Dropped show the list and details without a scene window. The 7/10 Deep Field is a 2D map with bounded pan and zoom, but no orbit. The scene can use a static 2D illustration when 3D is unavailable or graphics are off; the full library remains usable through the list. Lower area: virtualized list in one of three modes:
+
+Scene backgrounds and ambient light follow the active theme: dark themes keep luminous space, while light themes use the theme surface and contrast-matched dark bodies. Show all work titles as small thin plain text by default, without label pills or density caps. Anchor each title at a fixed offset from its projected work; do not reposition it to avoid collisions. During scale travel, titles stay hidden for the full transition and fade in over 200ms after arrival. In the 8/10 galaxy, titles also fade completely at maximum zoom-out and return as users zoom in; works remain selectable. Distinct jumps among 10–7 use the same full scale transition whether adjacent or direct, and end at the fitted scene view.
 
 - Cover grid, consistent aspect-ratio frames, title/year below; no-cover tile uses typography and a neutral palette.
 - Compact text grid, clear title and small score/type metadata; when the title does not fit in a card, use the optional short label, otherwise visually clamp the full title. Full title remains available on focus and in details.

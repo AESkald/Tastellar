@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
@@ -34,6 +38,10 @@ pub struct Preferences {
     pub text_scale: f64,
     pub reduced_motion: String,
     pub graphics: String,
+    #[serde(default = "default_true")]
+    pub scenes_enabled: bool,
+    #[serde(default = "default_true")]
+    pub remember_sidebars_per_tab: bool,
     pub restore_tabs: bool,
     pub startup_section: String,
     pub previous_tab_shortcut: String,
@@ -49,6 +57,8 @@ impl Default for Preferences {
             text_scale: 1.0,
             reduced_motion: "system".into(),
             graphics: "auto".into(),
+            scenes_enabled: true,
+            remember_sidebars_per_tab: true,
             restore_tabs: true,
             startup_section: "home".into(),
             previous_tab_shortcut: "Alt+ArrowLeft".into(),
@@ -68,6 +78,10 @@ pub struct WorkspaceTab {
     pub scroll_top: f64,
     #[serde(default)]
     pub library_view: Option<LibraryViewSnapshot>,
+    #[serde(default)]
+    pub folder_open: Option<bool>,
+    #[serde(default)]
+    pub details_open: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,6 +133,8 @@ impl Default for Workspace {
                 title: "Home".into(),
                 scroll_top: 0.0,
                 library_view: None,
+                folder_open: None,
+                details_open: None,
             }],
             active_tab_id: Some("home-1".into()),
             rail_collapsed: false,
@@ -700,6 +716,35 @@ pub fn blank_guidelines() -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_preferences_and_tabs_default_scene_and_sidebar_settings_safely() {
+        let preferences: Preferences = serde_json::from_value(serde_json::json!({
+            "theme": "dark",
+            "textScale": 1.0,
+            "reducedMotion": "system",
+            "graphics": "auto",
+            "restoreTabs": true,
+            "startupSection": "home",
+            "previousTabShortcut": "Alt+ArrowLeft",
+            "nextTabShortcut": "Alt+ArrowRight",
+            "radarMode": "explicit",
+            "visibleCriteria": []
+        }))
+        .unwrap();
+        assert!(preferences.scenes_enabled);
+        assert!(preferences.remember_sidebars_per_tab);
+
+        let tab: WorkspaceTab = serde_json::from_value(serde_json::json!({
+            "id": "legacy-tab",
+            "section": "library",
+            "title": "Library",
+            "scrollTop": 0.0
+        }))
+        .unwrap();
+        assert_eq!(tab.folder_open, None);
+        assert_eq!(tab.details_open, None);
+    }
 
     #[test]
     fn rating_inputs_enforce_bounds_and_missing_axes() {

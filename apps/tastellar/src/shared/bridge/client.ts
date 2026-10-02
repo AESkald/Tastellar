@@ -24,9 +24,28 @@ export const native = isTauri();
 let previewState = initialState();
 let previewAvatar: string | null = null;
 export async function loadHome(): Promise<HomeState> {
-  if (native) return invoke("load_home");
-  previewState.version = currentPreviewRevision();
-  return structuredClone(previewState);
+  let loaded: HomeState;
+  if (native) {
+    loaded = await invoke<HomeState>("load_home");
+  } else {
+    previewState.version = currentPreviewRevision();
+    loaded = structuredClone(previewState);
+  }
+  // Preview fixtures and older local snapshots can predate newly added
+  // preferences. Apply the same defaults as the native serde model.
+  const defaults = initialState();
+  return {
+    ...defaults,
+    ...loaded,
+    preferences: { ...defaults.preferences, ...loaded.preferences },
+    workspace: {
+      ...defaults.workspace,
+      ...loaded.workspace,
+      tabs: (loaded.workspace?.tabs ?? defaults.workspace.tabs).map((tab) => ({
+        ...tab,
+      })),
+    },
+  };
 }
 async function mutation(
   command: string,

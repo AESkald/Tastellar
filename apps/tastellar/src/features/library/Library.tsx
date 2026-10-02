@@ -21,6 +21,7 @@ import { VocabularyEditor } from "./VocabularyEditor";
 import { LibrarySidebar } from "./LibrarySidebar";
 import { LibraryDetailsPanel } from "./LibraryDetailsPanel";
 import { LibraryWorkDetails } from "./LibraryWorkDetails";
+import { LibraryUniverse } from "./LibraryUniverse";
 import {
   createEmptyLibraryEntry,
   LibraryEntryEditor,
@@ -35,7 +36,7 @@ import type {
   LibraryState,
   Tag as LibraryTag,
 } from "../../shared/bridge/libraryTypes";
-import type { LibraryViewSnapshot } from "../../shared/bridge/types";
+import type { LibraryViewSnapshot, Preferences } from "../../shared/bridge/types";
 import { t } from "../../shared/ui/i18n";
 import { criterionName, mediaTypeName, MediaTypeIcon } from "./MediaTypeIcon";
 import {
@@ -154,6 +155,11 @@ export function Library({
   sidebarOpen = true,
   initialView,
   onViewChange,
+  graphics = "auto",
+  reducedMotion = false,
+  onGraphicsChange,
+  sceneViewKey,
+  scenesEnabled = true,
 }: {
   state: LibraryState;
   rankingTiers: readonly RankedTierOrder[] | null;
@@ -179,6 +185,11 @@ export function Library({
   sidebarOpen?: boolean;
   initialView?: LibraryViewSnapshot;
   onViewChange?: (snapshot: LibraryViewSnapshot) => void;
+  graphics?: Preferences["graphics"];
+  reducedMotion?: boolean;
+  onGraphicsChange?: (graphics: Preferences["graphics"]) => void | Promise<void>;
+  sceneViewKey: string;
+  scenesEnabled?: boolean;
 }) {
   const [activeGroupId, setActiveGroupId] = useState(
     initialView?.activeGroupId ?? getInitialGroup(state.entries),
@@ -427,6 +438,40 @@ export function Library({
     tableSort,
     rankIndex,
   ]);
+  const sceneGroupId = activeGroupId.startsWith("score:")
+    ? activeGroupId.slice("score:".length)
+    : activeGroupId;
+  const showUniverse = scenesEnabled && !settledSearch && ["10", "9", "8", "7"].includes(sceneGroupId);
+  const sceneEntries = useMemo(
+    () => {
+      if (!showUniverse) return [];
+      return sortEntriesByRank(
+        state.entries.filter((entry) => entryGroupId(entry) === `score:${sceneGroupId}`),
+        state.entries,
+        rankIndex.withinScore,
+      );
+    },
+    [rankIndex.withinScore, sceneGroupId, showUniverse, state.entries],
+  );
+  const sceneWorks = useMemo(
+    () =>
+      sceneEntries.map((entry, index) => ({
+        id: entry.id,
+        title: entry.title,
+        shortLabel: entry.shortLabel ?? undefined,
+        rank: rankIndex.withinScore.get(entry.id) ?? null,
+        rating: entry.overallRating,
+        displayOrder: index,
+        mediaTypeId: entry.mediaTypeId,
+        coverAssetId: entry.coverAssetId,
+      })),
+    [rankIndex.withinScore, sceneEntries],
+  );
+  const sceneVisibleIds = useMemo(
+    () => new Set(groupEntries.map((entry) => entry.id)),
+    [groupEntries],
+  );
+  const sceneGroupCount = sceneVisibleIds.size;
   const selectedOutsideFilters = Boolean(
     activeEntry && !filtersMatch(activeEntry, filters, state),
   );
@@ -836,60 +881,6 @@ export function Library({
           </div>
         )}
 
-        {!settledSearch && (
-          <div className="library-collection-overview">
-            <div className="collection-overview-mark" aria-hidden="true">
-              <BookOpen size={20} />
-            </div>
-            <div>
-              <span className="micro-label">
-                {t("library.ui.collectionOverview")}
-              </span>
-              <strong>
-                {state.entries.length}{" "}
-                {t(
-                  state.entries.length === 1
-                    ? "library.ui.work"
-                    : "library.ui.works",
-                )}
-              </strong>
-              <span>
-                {
-                  state.entries.filter((entry) => entry.overallRating !== null)
-                    .length
-                }{" "}
-                {t("library.ui.rated")} ·{" "}
-                {state.entries.filter((entry) => entry.coverAssetId).length}{" "}
-                {t("library.ui.withCovers")}
-              </span>
-            </div>
-            <div
-              className="overview-score-strip"
-              aria-label={t("library.ui.ratedCountsByScore")}
-            >
-              {scoreGroups.map((score) => {
-                const count = state.entries.filter(
-                  (entry) => entry.overallRating === score,
-                ).length;
-                return (
-                  <button
-                    key={score}
-                    title={t("library.ui.scoreChartTitle", { score, count })}
-                    aria-label={t("library.ui.scoreChartAria", {
-                      score,
-                      count,
-                    })}
-                    onClick={() => setActiveGroupId(`score:${score}`)}
-                  >
-                    <i style={{ height: `${Math.max(4, count * 4)}px` }} />
-                    <span>{score}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
         <div className="library-list-toolbar">
           <div className="library-group-navigation">
             <button
@@ -969,6 +960,30 @@ export function Library({
             </details>
           )}
         </div>
+
+        {showUniverse && (
+          <LibraryUniverse
+            key={sceneViewKey}
+            sceneViewKey={sceneViewKey}
+            groupId={sceneGroupId}
+            groupLabel={selectedGroup?.label ?? t("library.ui.library")}
+            works={sceneWorks}
+            visibleIds={sceneVisibleIds}
+            selectedId={selectedEntryId}
+            groupCount={sceneGroupCount}
+            quality={graphics}
+            reducedMotion={reducedMotion}
+            onQualityChange={onGraphicsChange}
+            onLoadCover={onLoadCover}
+            onSelect={(id) => {
+              const entry = state.entries.find((item) => item.id === id);
+              if (entry) selectEntry(entry);
+            }}
+            onAddWork={createEntry}
+            onClearFilters={clearFilters}
+            emptyBecauseFiltered={sceneEntries.length > 0 && sceneGroupCount === 0}
+          />
+        )}
 
         {searchResultSelection && selectedOutsideFilters && (
           <div className="library-exception-note" role="status">
@@ -1088,7 +1103,7 @@ export function Library({
               ))}
             </div>
           )
-        ) : (
+        ) : settledSearch ? (
           <div className="library-empty-state">
             <div className="empty-symbol">
               <BookOpen size={30} strokeWidth={1.15} />
@@ -1121,7 +1136,7 @@ export function Library({
               )
             )}
           </div>
-        )}
+        ) : null}
       </section>
 
       {detailsOpen && (

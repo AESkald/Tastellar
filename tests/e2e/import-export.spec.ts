@@ -75,13 +75,13 @@ test("Settings and Library expose the same story-inclusive archive controls", as
   ).toBeDisabled();
 });
 
-test("About displays the short 0.3 release version", async ({ page }) => {
+test("About displays the short 0.4 release version", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page
     .getByRole("navigation", { name: "Settings categories" })
     .getByRole("button", { name: "About", exact: true })
     .click();
-  await expect(page.locator(".about-card")).toContainText("Version 0.3");
-  await expect(page.locator(".about-card")).not.toContainText("0.3.0");
+  await expect(page.locator(".about-card")).toContainText("Version 0.4");
+  await expect(page.locator(".about-card")).not.toContainText("0.4.0");
 });

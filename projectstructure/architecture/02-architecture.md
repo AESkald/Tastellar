@@ -2,7 +2,7 @@
 
 ## Proposed technology decision
 
-Use a **Tauri desktop/mobile host**, a **TypeScript + React web interface**, and a **Rust application/domain core backed by SQLite**. Use a Three.js scene adapter for 3D, HTML/SVG for accessible charts, and a separate deterministic Canvas 2D recap renderer. Use a standard web build tool such as Vite. Pin actual compatible versions only after the platform validation stage; this document does not assert that specific package versions or plugins were checked.
+Use a **Tauri desktop/mobile host**, a **TypeScript + React web interface**, and a **Rust application/domain core backed by SQLite**. Use an isolated native WebGL scene renderer with a Canvas 2D fallback, HTML/SVG for accessible charts, and a separate deterministic Canvas 2D recap renderer. Use a standard web build tool such as Vite. Pin actual compatible versions only after the platform validation stage; this document does not assert that specific package versions or plugins were checked.
 
 This is a design choice from the supplied requirements, not a claim of measured superiority. It avoids bundling a separate browser runtime on desktop and gives the local data model one implementation across platforms. A system webview can still use substantial memory; budgets require measurement. Tauri Android, graphics behavior, filesystem grants, keyboard handling, and image export must pass the stage-0 spike in [Delivery](../delivery/15-quality-and-delivery.md). If a fundamental gate fails, update this decision before building features, rather than building a second storage core.
 

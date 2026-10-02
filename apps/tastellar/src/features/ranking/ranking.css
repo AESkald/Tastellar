@@ -122,8 +122,6 @@
 .ranking-placed-list { grid-column: 2; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; min-height: 22px; padding: 1px 0; }
 .ranking-media-chip {
   --ranking-chip-title-max: 220px;
-  --ranking-chip-action-size: 27px;
-  --ranking-chip-position-size: 19px;
   min-height: 36px;
   box-sizing: border-box;
   flex: 0 1 max-content;
@@ -134,9 +132,8 @@
   padding: 4px 6px;
 }
 .ranking-placed-list .placed-card {
-  --ranking-chip-position-size: 11px;
   display: grid;
-  grid-template-columns: var(--ranking-chip-position-size) max-content;
+  grid-template-columns: max-content max-content;
   column-gap: 6px;
   flex: 0 0 max-content;
   width: max-content;
@@ -144,7 +141,8 @@
   border-radius: 8px;
   background: var(--surface);
 }
-.ranking-placed-list .placed-card.has-media-type { grid-template-columns: var(--ranking-chip-position-size) 14px max-content; }
+.ranking-placed-list .placed-card.has-media-type { grid-template-columns: max-content 14px max-content; }
+.ranking-placed-list .placed-card .ranking-position { width: max-content; flex: 0 0 auto; text-align: left; }
 .ranking-placed-list .placed-card .ranking-work-copy {
   flex: 0 0 auto;
   width: max-content;
@@ -174,7 +172,7 @@
 .ranking-placed-list .placed-card:hover,
 .ranking-placed-list .placed-card:focus-within { border-color: var(--border); background: var(--surface-hover); }
 .ranking-card-type-icon { width: 14px; height: 16px; display: grid; place-items: center; flex: 0 0 14px; color: var(--muted); }
-.ranking-media-chip .ranking-position { flex: 0 0 var(--ranking-chip-position-size); color: var(--dim); font-size: .63rem; font-weight: 550; }
+.ranking-media-chip .ranking-position { color: var(--dim); font-size: .63rem; font-weight: 550; }
 .ranking-placed-list.drop-active,
 .ranking-unplaced-tray.drop-active { min-height: 35px; background: color-mix(in srgb, var(--accent) 8%, var(--surface)); outline: 1px dashed var(--accent-border); }
 .ranking-placed-list.drop-active { min-height: 37px; background: color-mix(in srgb, var(--accent) 7%, transparent); outline: 1px dashed var(--accent-border); }
@@ -201,6 +199,12 @@
 .ranking-work-card.dragging { opacity: .42; transform: scale(.985); }
 .ranking-work-card.drop-active { border-color: var(--accent); }
 .ranking-work-card.newly-created { border-color: var(--accent-border); }
+:root[data-theme="dark"] .ranking-tier-list .ranking-media-chip,
+:root[data-theme="dark"] .ranking-tier-list .unplaced-card,
+:root[data-theme="dusk"] .ranking-tier-list .ranking-media-chip,
+:root[data-theme="dusk"] .ranking-tier-list .unplaced-card {
+  border-color: color-mix(in srgb, var(--border-soft), var(--text) 18%);
+}
 .ranking-drag-handle { width: 15px; height: 20px; display: grid; place-items: center; flex: 0 0 15px; padding: 0; color: var(--dim); border: 0; background: transparent; cursor: grab; }
 .ranking-drag-handle:active { cursor: grabbing; }
 .ranking-drag-handle .ranking-grip { opacity: .65; }
@@ -228,19 +232,21 @@
 .ranking-unplaced-items { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 3px; padding: 0; }
 .unplaced-card {
   --ranking-chip-title-max: 220px;
-  --ranking-chip-action-size: 27px;
+  --ranking-chip-action-size: 26px;
   min-height: 36px;
   box-sizing: border-box;
   flex: 0 1 max-content;
   align-items: center;
   gap: 6px;
   width: max-content;
-  max-width: min(100%, calc(var(--ranking-chip-title-max) + 65px));
-  padding: 4px 6px;
+  max-width: min(100%, calc(var(--ranking-chip-title-max) + 55px));
+  padding: 4px 0 4px 6px;
 }
+.unplaced-card .ranking-work-copy { margin-right: -6px; }
 .ranking-inline-action { flex: 0 0 auto; padding: 3px 5px; color: var(--accent); border: 1px solid var(--accent-border); border-radius: 5px; font-size: .59rem; white-space: nowrap; }
-.ranking-inline-action-icon { width: var(--ranking-chip-action-size, 27px); height: var(--ranking-chip-action-size, 27px); display: grid; place-items: center; flex: 0 0 var(--ranking-chip-action-size, 27px); padding: 0; border-color: transparent; color: var(--muted); background: transparent; }
+.ranking-inline-action-icon { width: var(--ranking-chip-action-size, 26px); height: var(--ranking-chip-action-size, 26px); display: grid; place-items: center; flex: 0 0 var(--ranking-chip-action-size, 26px); padding: 0; border-color: transparent; color: var(--muted); background: transparent; }
 .ranking-inline-action-icon:hover:not(:disabled) { color: var(--accent); border-color: var(--border-soft); background: var(--surface-hover); }
+.unplaced-card .ranking-inline-action-icon:focus-visible { outline-offset: -3px; }
 .unplaced-card .ranking-inline-action { margin-left: 0; }
 .ranking-inline-action:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .ranking-binary-suggestion { flex-wrap: wrap; gap: 6px; margin: 5px 1px 0; color: var(--accent); font-size: .64rem; line-height: 1.4; }
@@ -325,7 +331,7 @@
 .ranking-duel-card:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); box-shadow: 0 12px 28px #00000020; }
 .ranking-duel-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-color: var(--accent-border); }
 .ranking-duel-card:active:not(:disabled) { transform: translateY(0) scale(.992); box-shadow: 0 4px 12px #00000012; transition-duration: .12s; }
-.ranking-duel-art { position: relative; width: min(190px, 100%); aspect-ratio: .76; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; justify-content: center; gap: 10px; overflow: hidden; color: var(--accent); border: 1px solid var(--border-soft); border-radius: 9px; background: linear-gradient(150deg, var(--hero), var(--surface)); box-shadow: 0 5px 16px #00000020; }
+.ranking-duel-art { position: relative; width: min(190px, 100%); aspect-ratio: .76; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; justify-content: center; gap: 10px; overflow: hidden; color: var(--accent); border: 1px solid var(--border-soft); border-radius: 9px; background: linear-gradient(150deg, var(--cover-placeholder-start), var(--cover-placeholder-end)); box-shadow: 0 5px 16px #00000020; }
 .ranking-duel-art.has-cover { background: var(--surface); }
 .ranking-duel-art > img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .ranking-duel-art.no-cover > svg { color: color-mix(in srgb, var(--accent) 65%, var(--muted)); }
@@ -430,17 +436,17 @@
   .ranking-tier-actions .text-button svg { width: 12px; height: 12px; flex: 0 0 auto; }
   .ranking-tier-actions .compact-icon-button { width: 32px; height: 32px; }
   .ranking-placed-list { gap: 4px; }
-  .ranking-media-chip { --ranking-chip-title-max: clamp(120px, calc(100vw - 220px), 220px); --ranking-chip-position-size: 16px; min-height: 34px; }
-  .ranking-placed-list .placed-card { --ranking-chip-position-size: 19px; flex: 0 1 max-content; max-width: 100%; grid-template-columns: var(--ranking-chip-position-size) minmax(0, max-content); }
-  .ranking-placed-list .placed-card.has-media-type { grid-template-columns: var(--ranking-chip-position-size) 14px minmax(0, max-content); }
+  .ranking-media-chip { --ranking-chip-title-max: clamp(120px, calc(100vw - 220px), 220px); min-height: 34px; }
+  .ranking-placed-list .placed-card { flex: 0 1 max-content; max-width: 100%; grid-template-columns: max-content minmax(0, max-content); }
+  .ranking-placed-list .placed-card.has-media-type { grid-template-columns: max-content 14px minmax(0, max-content); }
   .ranking-placed-list .placed-card .ranking-work-copy { flex: 0 1 auto; min-width: 0; }
   .ranking-placed-list .placed-card .ranking-card-title-button { max-width: 100%; }
   .ranking-card-type-icon { width: 14px; flex-basis: 14px; }
   .ranking-work-copy strong, .ranking-work-card > strong { font-size: .65rem; }
   .ranking-work-copy small { font-size: .56rem; }
   .ranking-unplaced-tray { padding: 3px 6px; }
-  .ranking-inline-action-icon { width: 32px; height: 32px; }
-  .unplaced-card { --ranking-chip-title-max: clamp(120px, calc(100vw - 220px), 220px); --ranking-chip-action-size: 32px; max-width: min(100%, calc(var(--ranking-chip-title-max) + 70px)); }
+  .ranking-inline-action-icon { width: 26px; height: 32px; }
+  .unplaced-card { --ranking-chip-title-max: clamp(120px, calc(100vw - 220px), 220px); --ranking-chip-action-size: 26px; max-width: min(100%, calc(var(--ranking-chip-title-max) + 55px)); }
   .ranking-inline-action { padding: 3px 4px; font-size: .56rem; }
   .ranking-unscored { padding: 8px; }
   .ranking-unscored-items { grid-template-columns: 1fr; }

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentType,
@@ -95,11 +96,19 @@ function hasBridgeErrorCode(error: unknown, code: string): boolean {
     return false;
   }
 }
-const makeTab = (section: Section): WorkspaceTab => ({
+const makeTab = (
+  section: Section,
+  sidebarState: { folderOpen: boolean; detailsOpen: boolean } = {
+    folderOpen: true,
+    detailsOpen: false,
+  },
+): WorkspaceTab => ({
   id: crypto.randomUUID(),
   section,
   title: t(`nav.${section}`),
   scrollTop: 0,
+  folderOpen: sidebarState.folderOpen,
+  detailsOpen: sidebarState.detailsOpen,
 });
 export function App() {
   const [state, setState] = useState<HomeState | null>(null),
@@ -107,6 +116,17 @@ export function App() {
     [avatar, setAvatar] = useState<string | null>(null);
   const [libraryState, setLibraryState] = useState<LibraryState | null>(null);
   const [rankingState, setRankingState] = useState<RankingStateView | null>(null);
+  const mappedRankingTiers = useMemo(
+    () => rankingState?.tiers.map(({ score, placedIds }) => ({ score, placedIds })) ?? null,
+    [rankingState],
+  );
+  const libraryRankingTiers =
+    rankingState &&
+    libraryState &&
+    (rankingState.revision === libraryState.revision ||
+      rankingState.library.entries === libraryState.entries)
+      ? mappedRankingTiers
+      : null;
   const [rankingSidebarDropTarget, setRankingSidebarDropTarget] = useState<number | null>(null);
   const [selectedRankingEntryId, setSelectedRankingEntryId] = useState<string | null>(null);
   const [rankingSearch, setRankingSearch] = useState("");
@@ -219,9 +239,43 @@ export function App() {
     });
   }, [acceptRankingState, serializeOperation]);
   const initialize = useCallback(async () => {
-    setLoadError("");
+      setLoadError("");
     try {
-      const current = await bridge.loadHome();
+      let current = await bridge.loadHome();
+      let ws = structuredClone(current.workspace);
+      if (!current.preferences.restoreTabs || !ws.tabs.length) {
+        const tab = makeTab(current.preferences.startupSection, ws);
+        ws.tabs = [tab];
+        ws.activeTabId = tab.id;
+      } else if (current.preferences.rememberSidebarsPerTab) {
+        // Migrate legacy workspaces in memory by seeding each tab with the
+        // former global visibility. The next normal workspace save persists it.
+        const tabs = ws.tabs.map((tab) => {
+          if (typeof tab.folderOpen === "boolean" && typeof tab.detailsOpen === "boolean")
+            return tab;
+          return {
+            ...tab,
+            folderOpen: tab.folderOpen ?? ws.folderOpen,
+            detailsOpen: tab.detailsOpen ?? ws.detailsOpen,
+          };
+        });
+        ws = { ...ws, tabs };
+      }
+      if (!ws.tabs.some((tab) => tab.id === ws.activeTabId))
+        ws.activeTabId = ws.tabs[0].id;
+      if (current.preferences.rememberSidebarsPerTab) {
+        const active = ws.tabs.find((tab) => tab.id === ws.activeTabId);
+        if (active) {
+          const folderOpen = active.folderOpen ?? ws.folderOpen;
+          const detailsOpen = active.detailsOpen ?? ws.detailsOpen;
+          ws.folderOpen = folderOpen;
+          ws.detailsOpen = detailsOpen;
+        }
+      }
+      // Normalize legacy tab state without a startup write. React StrictMode
+      // may initialize twice; a read path must not race another initialization
+      // against the optimistic workspace revision.
+      current = { ...current, workspace: ws };
       stateRef.current = current;
       setState(current);
       try {
@@ -238,14 +292,6 @@ export function App() {
         }
         console.error("Ranking could not be loaded", error);
       }
-      const ws = structuredClone(current.workspace);
-      if (!current.preferences.restoreTabs || !ws.tabs.length) {
-        const tab = makeTab(current.preferences.startupSection);
-        ws.tabs = [tab];
-        ws.activeTabId = tab.id;
-      }
-      if (!ws.tabs.some((tab) => tab.id === ws.activeTabId))
-        ws.activeTabId = ws.tabs[0].id;
       setWorkspace(ws);
       workspaceRef.current = ws;
       setDetailsWidth(Math.max(240, Math.min(440, ws.detailsWidth)));
@@ -297,7 +343,50 @@ export function App() {
     systemReduced,
   ]);
   const updateWorkspace = useCallback(
-    (next: Workspace) => {
+    (requested: Workspace) => {
+      const previous = workspaceRef.current;
+      let next = requested;
+      if (
+        previous &&
+        stateRef.current?.preferences.rememberSidebarsPerTab
+      ) {
+        const switchingTabs = requested.activeTabId !== previous.activeTabId;
+        if (switchingTabs) {
+          const active = requested.tabs.find(
+            (tab) => tab.id === requested.activeTabId,
+          );
+          const folderOpen = active?.folderOpen ?? requested.folderOpen;
+          const detailsOpen = active?.detailsOpen ?? requested.detailsOpen;
+          next = {
+            ...requested,
+            folderOpen,
+            detailsOpen,
+            tabs: active
+              ? requested.tabs.map((tab) =>
+                  tab.id === active.id
+                    ? { ...tab, folderOpen, detailsOpen }
+                    : tab,
+                )
+              : requested.tabs,
+          };
+        } else if (
+          requested.folderOpen !== previous.folderOpen ||
+          requested.detailsOpen !== previous.detailsOpen
+        ) {
+          next = {
+            ...requested,
+            tabs: requested.tabs.map((tab) =>
+              tab.id === requested.activeTabId
+                ? {
+                    ...tab,
+                    folderOpen: requested.folderOpen,
+                    detailsOpen: requested.detailsOpen,
+                  }
+                : tab,
+            ),
+          };
+        }
+      }
       workspaceRef.current = next;
       setWorkspace(next);
       void enqueue((current) =>
@@ -308,6 +397,8 @@ export function App() {
   );
   const currentScroll = () => {
     const ws = workspaceRef.current!;
+    const rememberPerTab =
+      stateRef.current?.preferences.rememberSidebarsPerTab ?? true;
     return {
       ...ws,
       tabs: ws.tabs.map((tab) =>
@@ -317,6 +408,12 @@ export function App() {
               scrollTop: contentRef.current?.scrollTop ?? tab.scrollTop,
               libraryView:
                 libraryViews.current[tab.id] ?? tab.libraryView ?? null,
+              ...(rememberPerTab
+                ? {
+                    folderOpen: ws.folderOpen,
+                    detailsOpen: ws.detailsOpen,
+                  }
+                : {}),
             }
           : tab,
       ),
@@ -333,7 +430,10 @@ export function App() {
       setSaveError(t("app.tabsLimit"));
       return;
     }
-    const tab = makeTab(section);
+    const tab = makeTab(section, {
+      folderOpen: ws.folderOpen,
+      detailsOpen: ws.detailsOpen,
+    });
     updateWorkspace({ ...ws, tabs: [...ws.tabs, tab], activeTabId: tab.id });
     setChooser(false);
   };
@@ -356,7 +456,8 @@ export function App() {
     const ws = currentScroll(),
       index = ws.tabs.findIndex((tab) => tab.id === id);
     let tabs = ws.tabs.filter((tab) => tab.id !== id);
-    if (!tabs.length) tabs = [makeTab("home")];
+    if (!tabs.length)
+      tabs = [makeTab("home", { folderOpen: ws.folderOpen, detailsOpen: ws.detailsOpen })];
     updateWorkspace({
       ...ws,
       tabs,
@@ -613,12 +714,50 @@ export function App() {
     await enqueue((current) => bridge.saveHome(current.version, patch));
   };
   const savePrefs = async (patch: Partial<Preferences>) => {
-    await enqueue((current) =>
-      bridge.savePreferences(current.version, {
-        ...current.preferences,
-        ...patch,
-      }),
-    );
+    const nextState = await enqueue(async (current) => {
+      const nextPreferences = { ...current.preferences, ...patch };
+      let nextWorkspace = current.workspace;
+      let persistWorkspace = false;
+      if (
+        patch.rememberSidebarsPerTab !== undefined &&
+        patch.rememberSidebarsPerTab !== current.preferences.rememberSidebarsPerTab
+      ) {
+        if (patch.rememberSidebarsPerTab) {
+          // Keep existing per-tab choices when re-enabling the mode. Fill only
+          // snapshots that came from legacy data and were never initialized.
+          const tabs = current.workspace.tabs.map((tab) => ({
+            ...tab,
+            folderOpen: tab.folderOpen ?? current.workspace.folderOpen,
+            detailsOpen: tab.detailsOpen ?? current.workspace.detailsOpen,
+          }));
+          const active = tabs.find((tab) => tab.id === current.workspace.activeTabId);
+          nextWorkspace = {
+            ...current.workspace,
+            folderOpen: active?.folderOpen ?? current.workspace.folderOpen,
+            detailsOpen: active?.detailsOpen ?? current.workspace.detailsOpen,
+            tabs,
+          };
+        } else {
+          const active = current.workspace.tabs.find(
+            (tab) => tab.id === current.workspace.activeTabId,
+          );
+          nextWorkspace = {
+            ...current.workspace,
+            folderOpen: active?.folderOpen ?? current.workspace.folderOpen,
+            detailsOpen: active?.detailsOpen ?? current.workspace.detailsOpen,
+          };
+        }
+        persistWorkspace = true;
+      }
+      let saved = await bridge.savePreferences(current.version, nextPreferences);
+      if (persistWorkspace)
+        saved = await bridge.saveWorkspace(saved.version, nextWorkspace);
+      return saved;
+    });
+    if (nextState.workspace !== workspaceRef.current) {
+      workspaceRef.current = nextState.workspace;
+      setWorkspace(nextState.workspace);
+    }
   };
   const resetAllWorkspaceData = async () => {
     if (libraryViewPersistTimer.current) {
@@ -1287,15 +1426,9 @@ export function App() {
             ) : activeSection === "library" ? (
               libraryState ? (
                 <Library
+                  key={activeTab.id}
                   state={libraryState}
-                  rankingTiers={
-                    rankingState?.revision === libraryState.revision
-                      ? rankingState.tiers.map(({ score, placedIds }) => ({
-                          score,
-                          placedIds,
-                        }))
-                      : null
-                  }
+                  rankingTiers={libraryRankingTiers}
                   onSaveEntry={saveLibraryEntry}
                   onDeleteEntry={deleteLibraryEntry}
                   onSaveTag={createLibraryTag}
@@ -1307,6 +1440,15 @@ export function App() {
                   onImport={restoreArchive}
                   isNative={bridge.native}
                   onLibraryMutation={mutateLibrary}
+                  graphics={state?.preferences.graphics ?? "auto"}
+                  scenesEnabled={state?.preferences.scenesEnabled ?? true}
+                  sceneViewKey={activeTab.id}
+                  reducedMotion={Boolean(
+                    state?.preferences.reducedMotion === "on" ||
+                      (state?.preferences.reducedMotion === "system" &&
+                        systemReduced),
+                  )}
+                  onGraphicsChange={(graphics) => savePrefs({ graphics })}
                   sidebarOpen={workspace.folderOpen}
                   detailsOpen={workspace.detailsOpen}
                   detailsWidth={detailsWidth}

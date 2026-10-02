@@ -242,6 +242,21 @@ export function Settings({
                     <option value="off">{t("settings.motionOff")}</option>
                   </SelectControl>
                 </div>
+                <div className="setting-row">
+                  <div>
+                    <h3>{t("settings.scenes")}</h3>
+                    <p>{t("settings.scenesBody")}</p>
+                  </div>
+                  <button
+                    role="switch"
+                    aria-checked={preferences.scenesEnabled}
+                    aria-label={t("settings.scenes")}
+                    className={`switch ${preferences.scenesEnabled ? "on" : ""}`}
+                    onClick={() => void update({ scenesEnabled: !preferences.scenesEnabled })}
+                  >
+                    <i />
+                  </button>
+                </div>
               </section>
               <div className="settings-note">
                 <Sparkle />
@@ -266,6 +281,21 @@ export function Settings({
                     onClick={() =>
                       void update({ restoreTabs: !preferences.restoreTabs })
                     }
+                  >
+                    <i />
+                  </button>
+                </div>
+                <div className="setting-row">
+                  <div>
+                    <h3>{t("settings.rememberSidebarsPerTab")}</h3>
+                    <p>{t("settings.rememberSidebarsPerTabBody")}</p>
+                  </div>
+                  <button
+                    role="switch"
+                    aria-checked={preferences.rememberSidebarsPerTab}
+                    aria-label={t("settings.rememberSidebarsPerTab")}
+                    className={`switch ${preferences.rememberSidebarsPerTab ? "on" : ""}`}
+                    onClick={() => void update({ rememberSidebarsPerTab: !preferences.rememberSidebarsPerTab })}
                   >
                     <i />
                   </button>

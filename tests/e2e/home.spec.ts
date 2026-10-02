@@ -438,6 +438,56 @@ test("Workspace tabs reorder with a pointer drag while clicks still activate", a
   await expect(page.getByRole("table")).toBeVisible();
 });
 
+test("sidebar visibility can be remembered per tab or shared globally", async ({ page }) => {
+  await page.goto("/");
+  const tabs = page.getByRole("tablist", { name: "Workspace tabs" });
+  const left = page.locator(".titlebar .left-sidebar-toggle");
+  const right = page.locator(".titlebar .panel-toggle:not(.left-sidebar-toggle)");
+  await expect(left).toHaveAttribute("aria-pressed", "true");
+  await expect(right).toHaveAttribute("aria-pressed", "false");
+
+  const tabStripBox = await page.locator(".tab-strip").boundingBox();
+  const addTabBox = await page.getByRole("button", { name: "New tab", exact: true }).boundingBox();
+  if (!tabStripBox || !addTabBox) throw new Error("Workspace tab controls should be measurable");
+  expect(addTabBox.x).toBeGreaterThanOrEqual(tabStripBox.x + tabStripBox.width - 2);
+  await page.screenshot({ path: "test-results/new-tab-after-tab-strip.png", animations: "disabled" });
+
+  await page.getByRole("button", { name: "New tab", exact: true }).click();
+  await page.locator(".tab-chooser").getByRole("button", { name: "Home", exact: true }).click();
+  await expect(tabs.getByRole("tab")).toHaveCount(2);
+  await left.click();
+  await right.click();
+  await expect(left).toHaveAttribute("aria-pressed", "false");
+  await expect(right).toHaveAttribute("aria-pressed", "true");
+
+  await tabs.getByRole("tab").nth(0).click();
+  await expect(left).toHaveAttribute("aria-pressed", "true");
+  await expect(right).toHaveAttribute("aria-pressed", "false");
+  await tabs.getByRole("tab").nth(1).click();
+  await expect(left).toHaveAttribute("aria-pressed", "false");
+  await expect(right).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("navigation", { name: "Settings categories" }).getByRole("button", { name: "Your workspace" }).click();
+  const remember = page.getByRole("switch", { name: "Remember sidebar visibility per tab", exact: true });
+  await expect(remember).toHaveAttribute("aria-checked", "true");
+  await remember.click();
+  await expect(remember).toHaveAttribute("aria-checked", "false");
+
+  await tabs.getByRole("tab").nth(0).click();
+  await expect(left).toHaveAttribute("aria-pressed", "false");
+  await expect(right).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("navigation", { name: "Settings categories" }).getByRole("button", { name: "Your workspace" }).click();
+  await page.getByRole("switch", { name: "Remember sidebar visibility per tab", exact: true }).click();
+  await tabs.getByRole("tab").nth(0).click();
+  await expect(left).toHaveAttribute("aria-pressed", "true");
+  await expect(right).toHaveAttribute("aria-pressed", "false");
+  await tabs.getByRole("tab").nth(1).click();
+  await expect(left).toHaveAttribute("aria-pressed", "false");
+  await expect(right).toHaveAttribute("aria-pressed", "true");
+});
+
 test("Reading theme keeps Settings and Library selects legible", async ({
   page,
 }) => {

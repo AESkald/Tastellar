@@ -111,6 +111,66 @@ async function seedRankingCardFixture(page: Page) {
   }, { titles: normalTitles, oversizedTitle: longTitle });
 }
 
+async function seedRankingGeometryFixture(page: Page) {
+  const titles = [
+    "Outer Wilds",
+    "Harry Potter and the Methods of Rationality",
+    "Mother of Learning",
+    "Zelda BOTW",
+    "Vinland Saga",
+    "Bakuman",
+    "Arcane",
+    "Breaking Bad",
+    "Undertale",
+    "Noita",
+    "Minecraft",
+    "Made in Abyss",
+    "Dark Souls",
+    "Berserk",
+    "The Witcher 3",
+    "No media type",
+    "Orb – On the Movements of the Earth",
+  ];
+  const mediaTypeIds: Array<string | null> = [
+    "games", "literature", "literature", "games", "anime", "literature", "television",
+    "television", "games", "games", "games", "anime", "games", "literature", "games",
+    null, "literature",
+  ];
+  const unplacedTitles = ["Mother of Learning", "Mushoku Tensei"];
+  await page.addInitScript(({ titles, mediaTypeIds, unplacedTitles }) => {
+    const now = new Date().toISOString();
+    const mediaTypes = [
+      ["literature", "Literature", "book-open"],
+      ["anime", "Animation", "clapperboard"],
+      ["games", "Games", "gamepad-2"],
+      ["television", "Television", "tv"],
+    ].map(([id, name, iconKey], sortOrder) => ({
+      id, name, sortOrder, iconKey, criterionIds: [], archivedAt: null, version: 1, createdAt: now, updatedAt: now,
+    }));
+    const makeEntry = (id: string, title: string, mediaTypeId: string | null, overallRating: number, importOrder: number) => ({
+      id, version: 1, title, disposition: "experienced", mediaTypeId, overallRating, coverAssetId: null,
+      releaseDate: null, reviewText: "", shortLabel: null, criterionRatings: {}, tagIds: [],
+      createdAt: now, updatedAt: now, importOrder,
+    });
+    const placed = titles.map((title, index) => makeEntry(`ranked-${index + 1}`, title, mediaTypeIds[index], 10, index));
+    const unplaced = unplacedTitles.map((title, index) => makeEntry(`tray-${index + 1}`, title, "literature", 9, titles.length + index));
+    const entries = [...placed, ...unplaced];
+    const placedIds = placed.map((entry) => entry.id);
+    const unplacedIds = unplaced.map((entry) => entry.id);
+    sessionStorage.setItem("tastellar.preview.revision.v1", "0");
+    sessionStorage.setItem("tastellar.preview.library.v1", JSON.stringify({ revision: 0, entries, mediaTypes, criteria: [], tags: [] }));
+    sessionStorage.setItem("tastellar.preview.ranking.v1", JSON.stringify({
+      placements: [
+        ...placedIds.map((id) => [id, { score: 10, placed: true }]),
+        ...unplacedIds.map((id) => [id, { score: 9, placed: false }]),
+      ],
+      tierOrders: [[10, { placed: placedIds, unplaced: [] }], [9, { placed: [], unplaced: unplacedIds }]],
+      sequences: [[10, placedIds.length], [9, unplacedIds.length]],
+      initialized: true, session: null, judgments: [], latestMove: null,
+    }));
+  }, { titles, mediaTypeIds, unplacedTitles });
+}
+
 async function openRankingWithBothSidebars(page: Page) {
   await page.getByRole("button", { name: "Ranking", exact: true }).click();
   const toggles = page.locator(".titlebar .panel-toggle");
@@ -234,6 +294,165 @@ test("Ranking chips preserve normal titles and keep long unplaced titles compact
   await expect(editor.getByLabel("Release year")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(editor).toHaveCount(0);
+});
+
+test("ranked chips fit long titles and keep rank, icon, title, and action gaps consistent", async ({ page }) => {
+  await seedRankingGeometryFixture(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/");
+  await openRankingWithBothSidebars(page);
+
+  const placed = page.locator("#ranking-tier-10 .ranking-placed-list .placed-card");
+  const getPlaced = (title: string) => page.locator(
+    `#ranking-tier-10 .ranking-placed-list .placed-card:has(.ranking-card-title-button[title="${title}"])`,
+  );
+  const getUnplaced = (title: string) => page.locator(
+    `#ranking-tier-9 .ranking-unplaced-items .unplaced-card:has(.ranking-card-title-button[title="${title}"])`,
+  );
+  const readChip = (card: ReturnType<typeof page.locator>) => card.evaluate((element) => {
+    const title = element.querySelector<HTMLElement>(".ranking-card-title-button")!;
+    const titleRect = title.getBoundingClientRect();
+    const rank = element.querySelector<HTMLElement>(".ranking-position");
+    const icon = element.querySelector<HTMLElement>(".ranking-card-type-icon svg");
+    const range = document.createRange();
+    range.selectNodeContents(title);
+    const lines = Array.from(range.getClientRects());
+    const visibleLines = lines.filter((line) => line.top < titleRect.bottom - 0.5);
+    const rankRange = rank ? document.createRange() : null;
+    if (rank && rankRange) rankRange.selectNodeContents(rank);
+    const rankRect = rankRange?.getBoundingClientRect();
+    const iconRect = icon?.getBoundingClientRect();
+    const style = getComputedStyle(title);
+    const lineHeight = parseFloat(style.lineHeight);
+    return {
+      lineCount: Math.max(1, Math.round(titleRect.height / lineHeight)),
+      widestLineRight: visibleLines.reduce((right, line) => Math.max(right, line.right), titleRect.left),
+      titleLeft: titleRect.left,
+      titleRight: titleRect.right,
+      titleWidth: titleRect.width,
+      titleScrollWidth: title.scrollWidth,
+      titleClientWidth: title.clientWidth,
+      rankGap: rankRect ? (iconRect?.left ?? titleRect.left) - rankRect.right : null,
+      iconTitleGap: iconRect ? titleRect.left - iconRect.right : null,
+      lineHeight,
+      maxTitleWidth: parseFloat(style.maxWidth),
+      titleFitWidth: parseFloat(style.width),
+    };
+  });
+  const readAction = (card: ReturnType<typeof page.locator>) => card.evaluate((element) => {
+    const title = element.querySelector<HTMLElement>(".ranking-card-title-button")!;
+    const titleRect = title.getBoundingClientRect();
+    const button = element.querySelector<HTMLElement>(".ranking-inline-action-icon")!;
+    const icon = button.querySelector<SVGElement>("svg")!;
+    const range = document.createRange();
+    range.selectNodeContents(title);
+    const lines = Array.from(range.getClientRects());
+    const visibleLines = lines.filter((line) => line.top < titleRect.bottom - 0.5);
+    const cardStyle = getComputedStyle(element);
+    const lineHeight = parseFloat(getComputedStyle(title).lineHeight);
+    const buttonRect = button.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    return {
+      lineCount: Math.max(1, Math.round(titleRect.height / lineHeight)),
+      textToIconGap: iconRect.left - visibleLines.reduce((right, line) => Math.max(right, line.right), titleRect.left),
+      iconToInnerEdgeGap: element.getBoundingClientRect().right
+        - parseFloat(cardStyle.borderRightWidth)
+        - parseFloat(cardStyle.paddingRight)
+        - iconRect.right,
+      buttonWidth: buttonRect.width,
+      buttonHeight: buttonRect.height,
+    };
+  });
+  const assertFittedTitle = async (title: string, tightFit = true) => {
+    const card = getPlaced(title);
+    await expect(card).toHaveCount(1);
+    const metrics = await readChip(card);
+    expect(metrics.lineCount, `${title} should occupy at most two lines`).toBeLessThanOrEqual(2);
+    expect(metrics.titleScrollWidth, `${title} should not overflow its title box`).toBeLessThanOrEqual(metrics.titleClientWidth + 1);
+    expect(metrics.widestLineRight, `${title} should not be clipped at its fitted edge`).toBeLessThanOrEqual(metrics.titleRight + 1);
+    if (tightFit) {
+      expect(metrics.titleRight - metrics.widestLineRight, `${title} should use its measured widest line`).toBeLessThanOrEqual(4);
+    }
+    expect(metrics.titleFitWidth, `${title} should be narrower than the generic 220px cap`).toBeLessThan(220);
+    return metrics;
+  };
+
+  await expect(placed).toHaveCount(17);
+  const desktopHarry = await assertFittedTitle("Harry Potter and the Methods of Rationality");
+  const desktopOrb = await assertFittedTitle("Orb – On the Movements of the Earth");
+  expect(desktopHarry.lineCount).toBe(2);
+  expect(desktopOrb.lineCount).toBe(2);
+  for (const title of [
+    "Outer Wilds",
+    "No media type",
+    "Orb – On the Movements of the Earth",
+  ]) {
+    const metrics = await readChip(getPlaced(title));
+    expect(metrics.rankGap, `${title} rank gap should stay within 1px of 6px`).toBeGreaterThanOrEqual(5);
+    expect(metrics.rankGap, `${title} rank gap should stay within 1px of 6px`).toBeLessThanOrEqual(7);
+  }
+  for (const title of ["Outer Wilds", "Orb – On the Movements of the Earth"]) {
+    const gap = (await readChip(getPlaced(title))).iconTitleGap;
+    expect(gap, `${title} icon gap should stay within 1px of 6px`).toBeGreaterThanOrEqual(5);
+    expect(gap, `${title} icon gap should stay within 1px of 6px`).toBeLessThanOrEqual(7);
+  }
+
+  const tray = page.locator("#ranking-tier-9 .ranking-unplaced-tray");
+  const placedList = page.locator("#ranking-tier-10 .ranking-placed-list");
+  const [trayTop, placedBottom] = await Promise.all([
+    tray.evaluate((element) => element.getBoundingClientRect().top),
+    placedList.evaluate((element) => element.getBoundingClientRect().bottom),
+  ]);
+  expect(trayTop).toBeGreaterThanOrEqual(placedBottom);
+  const desktopAction = await readAction(getUnplaced("Mother of Learning"));
+  expect(desktopAction.lineCount).toBe(1);
+  expect(desktopAction.textToIconGap).toBeCloseTo(6, 0);
+  expect(desktopAction.iconToInnerEdgeGap).toBeCloseTo(6, 0);
+
+  const readThemeBorder = async (label: "Midnight" | "Dusk" | "Daylight", theme: "dark" | "dusk" | "light") => {
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: new RegExp(label) }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await page.getByRole("button", { name: "Ranking", exact: true }).click();
+    return getPlaced("Outer Wilds").evaluate((element) => ({
+      card: getComputedStyle(element).borderTopColor,
+      base: (() => {
+        const probe = document.createElement("span");
+        probe.style.color = getComputedStyle(document.documentElement).getPropertyValue("--border-soft").trim();
+        document.body.append(probe);
+        const color = getComputedStyle(probe).color;
+        probe.remove();
+        return color;
+      })(),
+    }));
+  };
+  const darkBorder = await readThemeBorder("Midnight", "dark");
+  const duskBorder = await readThemeBorder("Dusk", "dusk");
+  const lightBorder = await readThemeBorder("Daylight", "light");
+  expect(darkBorder.card).not.toBe(darkBorder.base);
+  expect(duskBorder.card).not.toBe(duskBorder.base);
+  expect(lightBorder.card).toBe(lightBorder.base);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panelToggles = page.locator(".titlebar .panel-toggle");
+  await expect(panelToggles).toHaveCount(2);
+  for (const toggle of [panelToggles.nth(0), panelToggles.nth(1)]) {
+    if ((await toggle.getAttribute("aria-pressed")) === "true") await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  }
+
+  const mobileHarry = await assertFittedTitle("Harry Potter and the Methods of Rationality", false);
+  const mobileOrb = await assertFittedTitle("Orb – On the Movements of the Earth", false);
+  expect(mobileHarry.lineCount).toBeLessThanOrEqual(2);
+  expect(mobileOrb.lineCount).toBeLessThanOrEqual(2);
+  const mobileAction = await readAction(getUnplaced("Mother of Learning"));
+  expect(mobileAction.buttonWidth).toBe(26);
+  expect(mobileAction.buttonHeight).toBe(32);
+  expect(mobileAction.textToIconGap).toBeGreaterThanOrEqual(5);
+  expect(mobileAction.textToIconGap).toBeLessThanOrEqual(9);
+  expect(mobileAction.iconToInnerEdgeGap).toBeCloseTo(6, 0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: "test-results/ranking-chip-fit-mobile.png", animations: "disabled" });
 });
 
 test("ranking chip drags across tier labels do not select text and still reorder", async ({ page }) => {

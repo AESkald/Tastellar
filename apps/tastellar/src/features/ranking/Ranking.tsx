@@ -152,6 +152,7 @@ export function Ranking({
   const typeFilterTriggerRef = useRef<HTMLButtonElement>(null);
   const tagFilterTriggerRef = useRef<HTMLButtonElement>(null);
   const filterPopoverRef = useRef<HTMLDivElement>(null);
+  const tierListRef = useRef<HTMLElement | null>(null);
   const lastPromptId = useRef("");
   const duelCoverCache = useRef(new Map<string, Promise<string | null>>());
   const autoPromptSession = useRef<string | null>(null);
@@ -187,6 +188,48 @@ export function Ranking({
       }),
     [state?.tiers],
   );
+  useLayoutEffect(() => {
+    const tierList = tierListRef.current;
+    if (!tierList || view !== "tiers") return;
+    let disposed = false;
+    let frame = 0;
+    const fitWrappedTitles = () => {
+      frame = 0;
+      if (disposed) return;
+      tierList.querySelectorAll<HTMLButtonElement>(
+        ".ranking-media-chip .ranking-card-title-button, .unplaced-card .ranking-card-title-button",
+      ).forEach((button) => {
+        // Measure from the unconstrained title cap each time so a wider viewport
+        // or sidebar change can restore space before fitting the rendered lines.
+        if (button.style.width) button.style.removeProperty("width");
+        const range = document.createRange();
+        range.selectNodeContents(button);
+        const lineRects = Array.from(range.getClientRects());
+        if (lineRects.length < 2) return;
+        const widestLine = Math.max(...lineRects.map((rect) => rect.width));
+        const currentWidth = button.getBoundingClientRect().width;
+        const cap = Number.parseFloat(getComputedStyle(button).maxWidth);
+        const fittedWidth = Math.ceil(widestLine + 2);
+        const targetWidth = Number.isFinite(cap) ? Math.min(fittedWidth, cap) : fittedWidth;
+        if (targetWidth < currentWidth - 2) button.style.width = `${targetWidth}px`;
+      });
+    };
+    const scheduleFit = () => {
+      if (disposed || frame) return;
+      frame = window.requestAnimationFrame(fitWrappedTitles);
+    };
+    fitWrappedTitles();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleFit);
+    observer?.observe(tierList);
+    window.addEventListener("resize", scheduleFit);
+    void document.fonts?.ready.then(scheduleFit);
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [view, library?.entries, state?.tiers, searchQuery, typeFilters, tagFilters]);
   const availableTypes = useMemo(
     () =>
       (library?.mediaTypes ?? []).filter((type) => !type.archivedAt),
@@ -1022,7 +1065,7 @@ export function Ranking({
 
       {view === "tiers" ? (
         <>
-        <section className={`ranking-tier-list${dragEntryId ? " is-dragging" : ""}`} id="ranking-media-top" aria-label={t("ranking.tierListLabel")}>
+        <section ref={tierListRef} className={`ranking-tier-list${dragEntryId ? " is-dragging" : ""}`} id="ranking-media-top" aria-label={t("ranking.tierListLabel")}>
           <div className="ranking-tier-toolbar">
             <div className="ranking-tier-summary">
               <div className="ranking-tier-summary-copy">
