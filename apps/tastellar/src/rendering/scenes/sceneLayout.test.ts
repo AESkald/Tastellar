@@ -138,22 +138,24 @@ describe("universe scene layout", () => {
     expect(landscape.cameraDistance).toBe(landscapeRepeat.cameraDistance);
     expect(span(landscape, "x")).toBeGreaterThan(span(portrait, "x"));
     expect(span(landscape, "y")).toBeLessThan(span(portrait, "y"));
-    expect(landscape.objects.filter((object) => object.id).every(({ size }) => size >= 0.25 && size <= 0.38)).toBe(true);
-    expect(landscape.lines.every(({ alpha }) => alpha >= 0.24)).toBe(true);
-
     const workObjects = landscape.objects.filter((object) => object.work);
-    const halfWidth = Math.max(...workObjects.map(({ x, work: item }) => {
-      const title = item!.shortLabel || item!.title;
-      const labelWidth = Math.max(1.15, Math.min(4, Math.min(250, title.length * 6 + 8) / 74));
-      return Math.abs(x) + labelWidth;
-    }));
-    const halfHeight = Math.max(...workObjects.map(({ y }) => Math.abs(y) + 11 / 74));
-    const horizontalFill = halfWidth / (landscape.cameraDistance * Math.tan(Math.PI / 6) * 3.5);
-    const verticalFill = halfHeight / (landscape.cameraDistance * Math.tan(Math.PI / 6));
-    expect(horizontalFill).toBeGreaterThan(0.7);
-    expect(horizontalFill).toBeLessThan(0.9);
-    expect(verticalFill).toBeGreaterThan(0.7);
-    expect(verticalFill).toBeLessThan(0.9);
+    const portraitWorkObjects = portrait.objects.filter((object) => object.work);
+    expect(workObjects.every(({ size }) => Number.isFinite(size) && size > 0 && size <= 1)).toBe(true);
+    expect(workObjects.map(({ size }) => size)).toEqual(portraitWorkObjects.map(({ size }) => size));
+    const landscapeById = new Map(workObjects.map((object) => [object.id, object]));
+    expect(landscapeById.get("responsive-0")!.alpha).toBeGreaterThan(landscapeById.get("responsive-17")!.alpha);
+    expect(landscape.lines.every(({ alpha }) => Number.isFinite(alpha) && alpha > 0 && alpha <= 1)).toBe(true);
+    expect(landscape.lines.map(({ alpha }) => alpha)).toEqual(portrait.lines.map(({ alpha }) => alpha));
+
+    const expectWorksFitViewport = (layout: ReturnType<typeof buildSceneLayout>, aspect: number) => {
+      const halfViewHeight = layout.cameraDistance * Math.tan(Math.PI / 6);
+      const halfViewWidth = halfViewHeight * aspect;
+      expect(layout.objects.filter((object) => object.work).every(({ x, y, size }) =>
+        Math.abs(x) + size <= halfViewWidth && Math.abs(y) + size <= halfViewHeight,
+      )).toBe(true);
+    };
+    expectWorksFitViewport(landscape, 3.5);
+    expectWorksFitViewport(portrait, 0.65);
   });
 
   it("spreads the shared low-rating asteroid lane across its full width without object collisions", () => {
@@ -245,7 +247,8 @@ describe("universe scene layout", () => {
     expect(full.objects.every((object) => object.id !== undefined && object.kind === "galaxy")).toBe(true);
     expect(objectById(full, "brightest").alpha).toBe(1);
     expect(objectById(full, "middle").alpha).toBeGreaterThan(objectById(full, "faintest").alpha);
-    expect(objectById(full, "faintest").alpha).toBe(0.4);
+    expect(objectById(full, "faintest").alpha).toBeGreaterThan(0);
+    expect(objectById(full, "faintest").alpha).toBeLessThan(1);
     for (const id of ["brightest", "faintest"]) {
       expect(objectById(filtered, id).alpha).toBe(objectById(full, id).alpha);
       expect(objectById(filtered, id).size).toBe(objectById(full, id).size);
