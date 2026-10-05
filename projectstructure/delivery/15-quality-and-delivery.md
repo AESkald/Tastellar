@@ -1,6 +1,6 @@
 # 15 — Quality gates and delivery sequence
 
-No application code is part of the present architecture task. This is the plan for subsequent implementation. A stage is complete only with its acceptance evidence; visual polish does not substitute for data safety.
+This plan sequences implementation and defines acceptance evidence for each stage. Visual polish does not substitute for data safety.
 
 ## Implementation stages
 
@@ -12,7 +12,7 @@ No application code is part of the present architecture task. This is the plan f
 | 3 — Canonical ranking | Fractional ordering, filtered insertion, cross-group moves, rank projections, undo, basic tier list | Randomized order invariants; 10,000 repeated gap insertions; filter/hidden-entry fixtures |
 | 4 — Home and universe | Profile, guidelines, explicit/derived chart, recommendation prompt, all group scenes and fallbacks | Palette/label/picking QA; performance and reduced-motion gates; prompt privacy/budget fixtures |
 | 5 — Duels and analytics | Persistent Davidson/Laplace evidence, active pair selection, confidence-qualified updates to the canonical order, distribution insights, top lists, boundaries | Cycles/ties/retractions/manual-lock/stale-job tests; full-tier fits for sessions selecting ≤200 candidates; exact analytics thresholds; plausible comparison workload measurements |
-| 6 — Recap | All specified templates, five Canon styles, text/cover modes, draft editing, deterministic image export | Golden-image and manual visual QA for every template/mode; archive restores editable compositions |
+| 6 — Recap | All specified templates, three neutral styles, text/cover modes, draft editing, deterministic image export | Golden-image and manual visual QA for every template/mode; archive restores editable compositions |
 | 7 — Platform release readiness | Signed macOS release, Windows/Android builds and adapters, complete migration/upgrade QA | Declare release status per platform based on real device testing; no “supported” claim from compilation alone |
 
 The complete target includes all stages. A preview build may omit unfinished sections with honest disabled states, but is not the full product. External import providers, monetization, sync and longitudinal/social ideas belong to later separately specified milestones.

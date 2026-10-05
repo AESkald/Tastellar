@@ -1,6 +1,6 @@
 # 14 — Architecture decisions, trade-offs, and validation gates
 
-These decisions are explicit recommendations, not externally verified package claims. Research was intentionally limited to the supplied brief and connected project. Implementation agents must validate current platform support, licensing and compatible versions when authorized to begin development.
+This record captures architectural choices, trade-offs, and validation gates. Platform support, licensing, and dependency compatibility must be checked against current sources before implementation relies on them.
 
 | Decision | Why | Alternative / cost |
 | --- | --- | --- |
@@ -39,7 +39,7 @@ A failing gate is a decision point, not permission to ship a broken target. Reco
 
 Single local profile initially. Default overall/criterion scale is integer 1–10. Planned/dropped do not retain a current overall score, but history does. One canonical manual-and-duel order of placed works is global across media types and shared by every feature; rated but unplaced works remain in a separate tray until explicit placement, and score-tier membership remains fixed unless the user explicitly changes the score. Filters select duel pairs but never create a parallel ranking or fit. Release dates are optional partial calendar dates. Default Add work means planned, but users can immediately choose experienced. Unsupported graphics always falls back to a usable list.
 
-These assumptions resolve underspecified behavior and should be evaluated in product review before feature implementation. They do not require a pause in producing this architecture.
+These assumptions resolve underspecified behavior and should be reviewed before release.
 
 ## Future evidence and costs
 

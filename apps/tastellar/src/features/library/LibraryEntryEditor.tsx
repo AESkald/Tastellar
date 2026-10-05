@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ImagePlus, Star, Tag as TagIcon } from "lucide-react";
+import { ImagePlus, Search, Star, Tag as TagIcon } from "lucide-react";
 import { errorMessage } from "../../shared/bridge/client";
+import type { CatalogCapability, CatalogSearchResult } from "../../shared/bridge/catalogTypes";
 import type {
   Entry as LibraryEntry,
   LibraryState,
@@ -9,6 +10,7 @@ import type {
 } from "../../shared/bridge/libraryTypes";
 import { Modal } from "../../shared/ui/Modal";
 import { SelectControl } from "../../shared/ui/SelectControl";
+import { CatalogSearchPanel } from "./CatalogSearchPanel";
 import { criterionName, mediaTypeName } from "./MediaTypeIcon";
 import { t } from "../../shared/ui/i18n";
 
@@ -18,10 +20,12 @@ export function createEmptyLibraryEntry(): LibraryEntry {
     id: crypto.randomUUID(),
     importOrder: null,
     title: "",
-    disposition: "planned",
+    disposition: "experienced",
     mediaTypeId: null,
     overallRating: null,
     coverAssetId: null,
+    externalIdentities: [],
+    remoteCover: null,
     releaseDate: null,
     reviewText: "",
     shortLabel: null,
@@ -49,8 +53,10 @@ export interface LibraryEntryEditorProps {
   busy: boolean;
   error: string;
   hasCoverStorage: boolean;
+  catalogCapabilities?: CatalogCapability[];
+  onCapabilitiesChange?: (capabilities: CatalogCapability[]) => void;
   onCancel: () => void;
-  onSave: (entry: LibraryEntry, coverFile: File | null) => void | Promise<void>;
+  onSave: (entry: LibraryEntry, coverFile: File | null, clearRemoteCover?: boolean) => void | Promise<void>;
   onCreateTag: (name: string) => Promise<LibraryTag>;
 }
 
@@ -61,6 +67,8 @@ export function LibraryEntryEditor({
   busy,
   error,
   hasCoverStorage,
+  catalogCapabilities = [],
+  onCapabilitiesChange,
   onCancel,
   onSave,
   onCreateTag,
@@ -74,6 +82,11 @@ export function LibraryEntryEditor({
   const [tagError, setTagError] = useState("");
   const [tagBusy, setTagBusy] = useState(false);
   const [coverPreview, setCoverPreview] = useState<string | null>(null);
+  const [editorTab, setEditorTab] = useState<"manual" | "catalog">("manual");
+  const [catalogMounted, setCatalogMounted] = useState(true);
+  const [catalogSelection, setCatalogSelection] = useState<CatalogSearchResult | null>(null);
+  const [useCatalogCover, setUseCatalogCover] = useState(true);
+  const [clearRemoteCover, setClearRemoteCover] = useState(false);
   const [monthText, setMonthText] = useState(
     entry.releaseDate?.month ? String(entry.releaseDate.month) : "",
   );
@@ -110,8 +123,42 @@ export function LibraryEntryEditor({
   }, [previewUrl]);
   const update = (patch: Partial<typeof draft>) =>
     setDraft((current) => ({ ...current, ...patch }));
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
+  const selectCatalogResult = (result: CatalogSearchResult) => {
+    const keepCoverChoice = result.coverMode === "persistReference" && Boolean(result.remoteCover);
+    setCatalogSelection(result);
+    setUseCatalogCover(keepCoverChoice);
+    if (keepCoverChoice) {
+      setCoverFile(null);
+      setClearRemoteCover(false);
+    }
+    const identities = new Map(
+      [...(draft.externalIdentities ?? []), ...result.identities].map((identity) => [
+        `${identity.provider}:${identity.entityKind}:${identity.externalId}`,
+        identity,
+      ]),
+    );
+    update({
+      title: isNew || !draft.title.trim() ? result.title : draft.title,
+      mediaTypeId: isNew || !draft.mediaTypeId ? result.suggestedMediaTypeId ?? draft.mediaTypeId : draft.mediaTypeId,
+      releaseDate: isNew || !draft.releaseDate ? (result.year ? { year: result.year, precision: "year" } : draft.releaseDate) : draft.releaseDate,
+      externalIdentities: [...identities.values()],
+      remoteCover: keepCoverChoice && result.coverMode === "persistReference" && result.remoteCover ? result.remoteCover : entry.remoteCover ?? null,
+    });
+    setEditorTab("manual");
+  };
+  const setCatalogCoverSelection = (checked: boolean) => {
+    setUseCatalogCover(checked);
+    setClearRemoteCover(false);
+    if (checked) setCoverFile(null);
+    if (!checked) {
+      update({ remoteCover: entry.remoteCover ?? null });
+      return;
+    }
+    if (!catalogSelection?.coverUrl || catalogSelection.coverMode !== "persistReference" || !catalogSelection.remoteCover) return;
+    update({ remoteCover: catalogSelection.remoteCover });
+  };
+  const submit = (event?: FormEvent) => {
+    event?.preventDefault();
     if (!draft.title.trim()) {
       setTagError(t("library.ui.enterTitle"));
       return;
@@ -155,6 +202,7 @@ export function LibraryEntryEditor({
           : null,
       },
       coverFile,
+      clearRemoteCover,
     );
   };
   const createTag = async () => {
@@ -187,8 +235,41 @@ export function LibraryEntryEditor({
       busy={busy}
       wide
     >
-      <form className="entry-editor-form" onSubmit={submit}>
-        <div className="entry-editor-scroll">
+      <div className="entry-editor-form">
+        <div className="entry-editor-tabs" role="tablist" aria-label={t("library.catalog.addWorkTabs")}>
+          <button data-testid="manual-entry-tab" type="button" role="tab" aria-selected={editorTab === "manual"} className={editorTab === "manual" ? "active" : ""} onClick={() => setEditorTab("manual")}>{t("library.catalog.manualEntry")}</button>
+          <button data-testid="catalog-tab" type="button" role="tab" aria-selected={editorTab === "catalog"} className={editorTab === "catalog" ? "active" : ""} onClick={() => { setCatalogMounted(true); setEditorTab("catalog"); }}><Search size={14} />{t("library.catalog.searchCatalog")}</button>
+        </div>
+        {catalogSelection && (
+          <div className="entry-catalog-selection">
+            <span>{t("library.catalog.selectedDetails", { title: catalogSelection.title })}</span>
+            {catalogSelection.coverUrl && catalogSelection.coverMode === "persistReference" && catalogSelection.remoteCover && (
+              <label className="entry-catalog-cover-choice">
+                <input type="checkbox" checked={useCatalogCover} onChange={(event) => setCatalogCoverSelection(event.target.checked)} />
+                {t("library.catalog.useProviderCover")}
+              </label>
+            )}
+
+          </div>
+        )}
+        {(draft.remoteCover || (clearRemoteCover && entry.remoteCover)) && (
+          <div className="entry-catalog-selection">
+            <span>{clearRemoteCover ? t("library.catalog.providerCoverWillBeRemoved") : t("library.catalog.providerCoverSaved")}</span>
+            {draft.remoteCover && <button type="button" className="text-button danger-link" onClick={() => { setUseCatalogCover(false); setClearRemoteCover(true); update({ remoteCover: null }); }}>{t("library.catalog.removeProviderCover")}</button>}
+            {clearRemoteCover && entry.remoteCover && <button type="button" className="text-button" onClick={() => { setClearRemoteCover(false); update({ remoteCover: entry.remoteCover }); }}>{t("library.catalog.keepCurrentProviderCover")}</button>}
+          </div>
+        )}
+        {catalogMounted && <div className="entry-editor-catalog" style={{ display: editorTab === "catalog" ? undefined : "none" }}>
+          <CatalogSearchPanel
+            mediaTypes={state.mediaTypes}
+            initialQuery={draft.title}
+            initialMediaTypeId={draft.mediaTypeId}
+            capabilities={catalogCapabilities}
+            onCapabilitiesChange={onCapabilitiesChange}
+            onSelect={selectCatalogResult}
+          />
+        </div>}
+        <div className="entry-editor-scroll" style={{ display: editorTab === "manual" ? undefined : "none" }}>
           <label className="field">
             <span>
               {t("library.ui.titleRequired")} <i aria-hidden="true">*</i>
@@ -196,7 +277,7 @@ export function LibraryEntryEditor({
             <input
               autoFocus
               maxLength={500}
-              required
+              required={editorTab === "manual"}
               value={draft.title}
               onChange={(event) => update({ title: event.target.value })}
               placeholder={t("library.ui.workTitle")}
@@ -489,6 +570,9 @@ export function LibraryEntryEditor({
                     return;
                   }
                   setCoverFile(file);
+                  setUseCatalogCover(false);
+                  setClearRemoteCover(true);
+                  update({ remoteCover: null });
                   setTagError("");
                 }}
               />
@@ -506,6 +590,7 @@ export function LibraryEntryEditor({
               <div className="cover-upload-preview">
                 <img
                   src={coverPreview}
+                  decoding="async"
                   alt={t("library.ui.selectedCoverPreview")}
                 />
                 <button
@@ -544,11 +629,11 @@ export function LibraryEntryEditor({
           >
             {t("library.vocabulary.cancel")}
           </button>
-          <button type="submit" className="button primary" disabled={busy}>
+          <button type="button" className="button primary" disabled={busy} onClick={() => submit()}>
             {busy ? t("library.ui.saving") : t("library.ui.saveWork")}
           </button>
         </footer>
-      </form>
+      </div>
     </Modal>
   );
 }

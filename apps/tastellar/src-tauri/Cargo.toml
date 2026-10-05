@@ -1,6 +1,6 @@
 [package]
 name = "tastellar"
-version = "0.4.0"
+version = "1.0.0"
 description = "Tastellar local desktop app"
 edition.workspace = true
 license.workspace = true
@@ -11,11 +11,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json.workspace = true
+getrandom = "0.4"
+zeroize = "1"
 
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
+url = "2"
+base64.workspace = true
 tastellar-domain = { path = "../../../crates/domain" }
 tastellar-storage = { path = "../../../crates/storage" }
 serde.workspace = true
+zeroize = "1"

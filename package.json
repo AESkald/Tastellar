@@ -1,6 +1,6 @@
 {
   "name": "tastellar-workspace",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "private": true,
   "workspaces": [
     "apps/tastellar"
@@ -11,6 +11,10 @@
     "test": "npm run test --workspace @tastellar/app",
     "desktop": "node scripts/desktop.mjs dev",
     "desktop:build": "node scripts/desktop.mjs build",
+    "desktop:build:macos": "node scripts/desktop.mjs build macos app",
+    "desktop:build:app": "node scripts/desktop.mjs build macos app",
+    "desktop:build:dmg": "node scripts/desktop.mjs build macos dmg",
+    "desktop:build:windows": "node scripts/desktop.mjs build windows",
     "test:e2e": "PLAYWRIGHT_BROWSERS_PATH=\"$PWD/.tools/browsers\" playwright test"
   },
   "devDependencies": {

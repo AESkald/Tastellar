@@ -17,6 +17,8 @@ export interface Entry {
   mediaTypeId: string | null;
   overallRating: number | null;
   coverAssetId: string | null;
+  externalIdentities?: ExternalIdentity[];
+  remoteCover?: RemoteCoverReference | null;
   releaseDate: ReleaseDate | null;
   reviewText: string;
   shortLabel: string | null;
@@ -28,10 +30,29 @@ export interface Entry {
 
 export type EntryDraft = Omit<
   Entry,
-  "importOrder" | "version" | "createdAt" | "updatedAt"
+  "importOrder" | "version" | "createdAt" | "updatedAt" | "externalIdentities" | "remoteCover"
 > & {
   criterionRatings: Record<string, number | null>;
+  /** Omitted values preserve linked provider IDs on ordinary edits. */
+  externalIdentities?: ExternalIdentity[];
+  /** Omitted/null preserves the saved remote reference; clearRemoteCover clears on save. */
+  remoteCover?: RemoteCoverReference | null;
+  clearRemoteCover?: boolean;
 };
+
+export interface ExternalIdentity {
+  provider: string;
+  entityKind: string;
+  externalId: string;
+  sourceUrl: string | null;
+}
+
+export interface RemoteCoverReference {
+  provider: string;
+  url: string;
+  sourceUrl: string | null;
+  attribution: string | null;
+}
 
 export interface MediaType {
   id: string;

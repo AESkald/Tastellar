@@ -1,6 +1,6 @@
 # 17 — Requirement coverage and future backlog
 
-This index ties the supplied brief to implementable owners. It does not claim the product has been implemented.
+This index maps the original brief and later requirements to their owning specifications.
 
 | Brief requirement | Specification owner |
 | --- | --- |
@@ -46,7 +46,6 @@ This index ties the supplied brief to implementable owners. It does not claim th
 | macOS, Windows, Android and shared/platform-specific boundaries | 02, 13, 14, 15 |
 | CI and meaningful tests | 15 |
 | Future subscription/advertising, data independent of payment | 13 |
-| Agent-addressable Markdown structure with no application code | README, 16 |
 
 ## Additions resolving ambiguity
 

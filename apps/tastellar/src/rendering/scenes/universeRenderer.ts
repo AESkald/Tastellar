@@ -1982,6 +1982,38 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
   function updateProjection(nextProjection: UniverseProjection, immediate = false) {
     const aspectChanged = nextProjection.group === "9" && projection.group === "9"
       && Math.abs((nextProjection.viewportAspect ?? 3.2) - (projection.viewportAspect ?? 3.2)) > 0.045;
+    // Cover palette completion changes appearance, not orbital positions or camera travel.
+    const appearanceOnly = !activeScaleTransition && nextProjection.group === projection.group
+      && nextProjection.key === projection.key
+      && nextProjection.viewportAspect === projection.viewportAspect
+      && nextProjection.viewportWidth === projection.viewportWidth
+      && nextProjection.viewportHeight === projection.viewportHeight
+      && nextProjection.works !== projection.works
+      && nextProjection.works.length === projection.works.length
+      && nextProjection.works.every((work, index) => {
+        const old = projection.works[index];
+        return old && work.id === old.id && work.title === old.title
+          && work.shortLabel === old.shortLabel && work.rank === old.rank
+          && work.rating === old.rating && work.displayOrder === old.displayOrder
+          && work.mediaTypeId === old.mediaTypeId && work.coverAssetId === old.coverAssetId;
+      });
+    if (appearanceOnly) {
+      const refreshed = new Map(nextProjection.works.map((work) => [work.id, work]));
+      for (const node of nodes.values()) {
+        if (!node.work) continue;
+        const work = refreshed.get(node.work.id);
+        if (!work) continue;
+        if (node.color === node.work.palette?.dominant || node.color === node.work.palette?.vibrant) {
+          node.color = work.palette?.dominant ?? work.palette?.vibrant ?? node.color;
+        }
+        node.work = work;
+      }
+      projection = nextProjection;
+      lastProjectionWorks = nextProjection.works;
+      forceProjectionUpdate = true;
+      ensureFrame();
+      return;
+    }
     const pending = activeScaleTransition;
     if (pending && nextProjection.group === pending.incomingProjection.group && nextProjection.key === pending.incomingProjection.key) {
       const sameWorkIds = nextProjection.works.length === pending.incomingProjection.works.length

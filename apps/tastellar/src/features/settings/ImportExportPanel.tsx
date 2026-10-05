@@ -9,10 +9,12 @@ import "./transfer.css";
 export function ImportExportPanel({
   onExport,
   onImport,
+  onImportFromServices,
   isNative,
 }: {
   onExport: (path: string) => Promise<void>;
   onImport: (path: string) => Promise<void>;
+  onImportFromServices?: () => void;
   isNative: boolean;
 }) {
   const [importPath, setImportPath] = useState<string | null>(null);
@@ -74,6 +76,15 @@ export function ImportExportPanel({
     <div className="transfer-panel">
       <p className="transfer-panel-copy">{t("settings.archiveBody")}</p>
       <div className="transfer-actions">
+        {onImportFromServices && <button
+          className="button primary"
+          disabled={busy}
+          onClick={onImportFromServices}
+          data-testid="open-import-wizard"
+        >
+          <Download size={15} />
+          {t("library.import.importFromServices")}
+        </button>}
         <button
           className="button primary"
           disabled={!isNative || busy}

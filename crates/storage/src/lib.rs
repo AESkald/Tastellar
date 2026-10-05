@@ -4,25 +4,40 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs,
     io::{Cursor, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tastellar_domain::{
-    blank_guidelines, validate_criterion, validate_entry, validate_guidelines, validate_media_type,
-    validate_preferences, validate_profile, validate_tag, validate_taste_inputs,
-    validate_workspace, Criterion, CriterionInput, Entry, EntryInput, HomeState, LibraryState,
-    MediaType, MediaTypeInput, Preferences, Profile, ProfileInput, ReleaseDate, Tag, TagInput,
-    Workspace,
+    blank_guidelines, validate_batch_entry_update, validate_criterion, validate_entry,
+    validate_guidelines, validate_media_type, validate_preferences, validate_profile, validate_tag,
+    validate_taste_inputs, validate_workspace, BatchEntryUpdateInput, Criterion, CriterionInput,
+    Entry, EntryInput, ExternalIdentity, HomeState, LibraryState, MediaType, MediaTypeInput,
+    Preferences, Profile, ProfileInput, ReleaseDate, Tag, TagInput, Workspace,
 };
 use thiserror::Error;
 
+pub mod catalog;
+mod cover;
+pub mod import;
 pub mod portable_backup;
 pub(crate) mod ranking;
+mod recap;
+pub use catalog::{
+    catalog_capabilities, configure_provider_credentials, download_catalog_cover, search_catalog,
+    steam_owned_games, CatalogCandidate, CatalogCapability, CatalogCoverDownload,
+    ProviderCredentialInput, ProviderCredentialState, ProviderSession, SearchCatalogInput,
+    SearchCatalogResult, SteamOwnedGame,
+};
+pub use cover::CoverImageJob;
+pub use import::{
+    ImportCommitInput, ImportCommitResult, ImportCoverFailure, ImportPreview, ImportUndoResult,
+    PrepareImportInput,
+};
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 12;
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 40_000_000;
 const MAX_BACKUP_BYTES: u64 = 50 * 1024 * 1024;
@@ -58,7 +73,7 @@ impl StorageError {
             Self::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 "PermissionDenied"
             }
-            Self::Io(error) if error.raw_os_error() == Some(28) => "DiskFull",
+            Self::Io(error) if matches!(error.raw_os_error(), Some(28 | 112)) => "DiskFull",
             _ => "Internal",
         }
     }
@@ -73,6 +88,8 @@ impl From<tastellar_domain::ValidationError> for StorageError {
 pub struct Storage {
     root: PathBuf,
     conn: Connection,
+    import_sessions: BTreeMap<String, crate::import::ImportSession>,
+    import_batches: BTreeMap<String, crate::import::CommittedImportBatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -555,6 +572,46 @@ struct BackupAvatar {
     base64: String,
 }
 
+fn stage_asset_at(root: &Path, relative: &str, bytes: &[u8]) -> Result<(), StorageError> {
+    let path = root.join(relative);
+    if path.exists() {
+        if path.symlink_metadata()?.file_type().is_file()
+            && hex_hash(&fs::read(&path)?) == hex_hash(bytes)
+        {
+            return Ok(());
+        }
+        return Err(StorageError::AssetUnavailable);
+    }
+    let temp =
+        root.join("assets")
+            .join(format!(".asset-{}-{}.tmp", std::process::id(), now_nanos()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    if let Err(error) = (|| -> Result<(), std::io::Error> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        // A rename can replace a destination created after the check above.
+        // Linking creates the final path only when it is still absent.
+        fs::hard_link(&temp, &path)?;
+        Ok(())
+    })() {
+        let _ = fs::remove_file(&temp);
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            if path.symlink_metadata()?.file_type().is_file()
+                && hex_hash(&fs::read(&path)?) == hex_hash(bytes)
+            {
+                return Ok(());
+            }
+            return Err(StorageError::AssetUnavailable);
+        }
+        return Err(error.into());
+    }
+    fs::remove_file(&temp)?;
+    Ok(())
+}
+
 impl Storage {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, StorageError> {
         let root = root.as_ref().to_path_buf();
@@ -900,9 +957,115 @@ impl Storage {
             tx.commit()?;
             version = 9;
         }
+        if version == 9 {
+            let tx = conn.transaction()?;
+            let has_identity_table: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_identity')",
+                [], |row| row.get(0),
+            )?;
+            if !has_identity_table {
+                tx.execute_batch(
+                    "\
+                CREATE TABLE external_identity (
+                    provider TEXT NOT NULL,
+                    entity_kind TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    source_url TEXT,
+                    entry_id TEXT NOT NULL REFERENCES entry(id) ON DELETE CASCADE,
+                    PRIMARY KEY(provider,entity_kind,external_id),
+                    UNIQUE(entry_id,provider,entity_kind,external_id)
+                );
+                ",
+                )?;
+            }
+            tx.execute_batch("CREATE INDEX IF NOT EXISTS external_identity_entry ON external_identity(entry_id,provider,entity_kind);")?;
+            for (column, sql) in [
+                (
+                    "remote_cover_provider",
+                    "ALTER TABLE entry ADD COLUMN remote_cover_provider TEXT;",
+                ),
+                (
+                    "remote_cover_url",
+                    "ALTER TABLE entry ADD COLUMN remote_cover_url TEXT;",
+                ),
+                (
+                    "remote_cover_source_url",
+                    "ALTER TABLE entry ADD COLUMN remote_cover_source_url TEXT;",
+                ),
+                (
+                    "remote_cover_attribution",
+                    "ALTER TABLE entry ADD COLUMN remote_cover_attribution TEXT;",
+                ),
+            ] {
+                let has_column: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('entry') WHERE name=?1)",
+                    [column],
+                    |row| row.get(0),
+                )?;
+                if !has_column {
+                    tx.execute_batch(sql)?;
+                }
+            }
+            tx.execute_batch("PRAGMA user_version=10;")?;
+            tx.commit()?;
+            version = 10;
+        }
+        if version == 10 {
+            let tx = conn.transaction()?;
+            tx.execute_batch(
+                "\
+                CREATE TABLE IF NOT EXISTS import_batch (
+                    id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    created_count INTEGER NOT NULL DEFAULT 0 CHECK(created_count>=0),
+                    linked_count INTEGER NOT NULL DEFAULT 0 CHECK(linked_count>=0),
+                    skipped_count INTEGER NOT NULL DEFAULT 0 CHECK(skipped_count>=0),
+                    undone INTEGER NOT NULL DEFAULT 0 CHECK(undone IN (0,1))
+                );
+                CREATE TABLE IF NOT EXISTS import_batch_entry (
+                    batch_id TEXT NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
+                    entry_id TEXT NOT NULL,
+                    action TEXT NOT NULL CHECK(action IN ('create','link')),
+                    before_json TEXT,
+                    post_version INTEGER NOT NULL,
+                    PRIMARY KEY(batch_id,entry_id)
+                );
+                CREATE TABLE IF NOT EXISTS import_source_activity (
+                    provider TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    entry_id TEXT NOT NULL REFERENCES entry(id) ON DELETE CASCADE,
+                    batch_id TEXT NOT NULL REFERENCES import_batch(id) ON DELETE CASCADE,
+                    event_id TEXT NOT NULL REFERENCES entry_event(id) ON DELETE CASCADE,
+                    PRIMARY KEY(provider,fingerprint)
+                );
+                CREATE INDEX IF NOT EXISTS import_source_activity_entry ON import_source_activity(entry_id,provider);
+                PRAGMA user_version=11;
+            ",
+            )?;
+            tx.commit()?;
+            version = 11;
+        }
+        if version == 11 {
+            let tx = conn.transaction()?;
+            let has_column: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('import_batch_entry') WHERE name='after_json')",
+                [], |row| row.get(0),
+            )?;
+            if !has_column {
+                tx.execute_batch("ALTER TABLE import_batch_entry ADD COLUMN after_json TEXT;")?;
+            }
+            tx.execute_batch("PRAGMA user_version=12;")?;
+            tx.commit()?;
+            version = 12;
+        }
         debug_assert_eq!(version, SCHEMA_VERSION);
         recover_interrupted_reset(&root, &conn)?;
-        let mut storage = Self { root, conn };
+        let mut storage = Self {
+            root,
+            conn,
+            import_sessions: BTreeMap::new(),
+            import_batches: BTreeMap::new(),
+        };
         storage.recover_ranking_state()?;
         Ok(storage)
     }
@@ -1132,6 +1295,8 @@ impl Storage {
                     media_type_id: row.get(4)?,
                     overall_rating: row.get(5)?,
                     cover_asset_id: row.get(6)?,
+                    external_identities: Vec::new(),
+                    remote_cover: None,
                     release_date,
                     review_text: row.get(11)?,
                     legacy_notes_text: None,
@@ -1145,6 +1310,8 @@ impl Storage {
             })?;
             for row in rows {
                 let (mut entry,) = row?;
+                entry.external_identities = self.load_external_identities(&entry.id)?;
+                entry.remote_cover = self.load_remote_cover(&entry.id)?;
                 {
                     let mut ratings = self.conn.prepare(
                         "SELECT criterion_id,score FROM criterion_rating WHERE entry_id=?1 ORDER BY criterion_id",
@@ -1176,15 +1343,199 @@ impl Storage {
         })
     }
 
+    pub(crate) fn load_external_identities(
+        &self,
+        entry_id: &str,
+    ) -> Result<Vec<ExternalIdentity>, StorageError> {
+        let mut statement = self.conn.prepare(
+            "SELECT provider,entity_kind,external_id,source_url FROM external_identity WHERE entry_id=?1 ORDER BY provider,entity_kind,external_id",
+        )?;
+        let mut identities = Vec::new();
+        for row in statement.query_map([entry_id], |row| {
+            Ok(ExternalIdentity {
+                provider: row.get(0)?,
+                entity_kind: row.get(1)?,
+                external_id: row.get(2)?,
+                source_url: row.get(3)?,
+            })
+        })? {
+            identities.push(row?);
+        }
+        Ok(identities)
+    }
+
+    pub(crate) fn load_remote_cover(
+        &self,
+        entry_id: &str,
+    ) -> Result<Option<tastellar_domain::RemoteCoverReference>, StorageError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT remote_cover_provider,remote_cover_url,remote_cover_source_url,remote_cover_attribution FROM entry WHERE id=?1",
+                [entry_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((Some(provider), Some(url), source_url, attribution)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(tastellar_domain::RemoteCoverReference {
+            provider,
+            url,
+            source_url,
+            attribution,
+        }))
+    }
+
     pub fn save_entry(
         &mut self,
         expected_revision: i64,
         entry: EntryInput,
     ) -> Result<LibraryState, StorageError> {
+        self.save_entry_inner(expected_revision, entry, None)
+    }
+
+    pub fn save_entry_with_cover_bytes(
+        &mut self,
+        expected_revision: i64,
+        entry: EntryInput,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> Result<LibraryState, StorageError> {
+        validate_entry(&entry)?;
+        self.ensure_version(expected_revision)?;
+        let (extension, width, height) = validate_image(mime_type, bytes)?;
+        let hash = hex_hash(bytes);
+        let relative = format!("assets/{hash}.{extension}");
+        self.stage_asset(&relative, bytes)?;
+        self.save_entry_inner(
+            expected_revision,
+            entry,
+            Some((
+                hash,
+                relative,
+                mime_type.to_owned(),
+                bytes.len(),
+                width,
+                height,
+            )),
+        )
+    }
+
+    /// Attach a retried catalog cover without resubmitting or overwriting any
+    /// other part of the imported entry.
+    pub fn save_entry_cover_with_bytes(
+        &mut self,
+        expected_revision: i64,
+        entry_id: &str,
+        batch_id: &str,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> Result<LibraryState, StorageError> {
+        let (extension, width, height) = validate_image(mime_type, bytes)?;
+        let hash = hex_hash(bytes);
+        let relative_path = format!("assets/{hash}.{extension}");
+        let root = self.root.clone();
+        self.ensure_version(expected_revision)?;
+
+        let tx = self.conn.transaction()?;
+        Self::check_version(&tx, expected_revision)?;
+        let batch_snapshot: Option<(String, i64, bool)> = tx
+            .query_row(
+                "SELECT import_batch_entry.after_json,import_batch_entry.post_version,import_batch.undone FROM import_batch_entry JOIN import_batch ON import_batch.id=import_batch_entry.batch_id WHERE import_batch_entry.batch_id=?1 AND import_batch_entry.entry_id=?2",
+                params![batch_id, entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((after_json, batch_post_version, batch_undone)) = batch_snapshot else {
+            return Err(StorageError::Validation(
+                "The import receipt for this cover retry is unavailable".into(),
+            ));
+        };
+        if batch_undone {
+            return Err(StorageError::Conflict);
+        }
+        let Some(current_snapshot) = crate::import::load_entry_snapshot(&tx, entry_id)? else {
+            return Err(StorageError::Validation(
+                "The imported item is no longer in the library".into(),
+            ));
+        };
+        let expected_snapshot: crate::import::EntrySnapshot = serde_json::from_str(&after_json)?;
+        if current_snapshot.entry.version != batch_post_version
+            || current_snapshot != expected_snapshot
+        {
+            return Err(StorageError::Conflict);
+        }
+        let previous_asset = current_snapshot.entry.cover_asset_id.clone();
+        let had_remote_cover = current_snapshot.entry.remote_cover.is_some();
+        if previous_asset.as_deref() == Some(hash.as_str()) && !had_remote_cover {
+            tx.commit()?;
+            return self.load_library();
+        }
+
+        stage_asset_at(&root, &relative_path, bytes)?;
+        let now = now_rfc3339();
+        tx.execute(
+            "INSERT OR IGNORE INTO assets(hash,relative_path,mime_type,byte_length,width,height,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![hash,relative_path,mime_type,bytes.len() as i64,width as i64,height as i64,now_epoch()],
+        )?;
+        tx.execute(
+            "UPDATE entry SET cover_asset_id=?1,remote_cover_provider=NULL,remote_cover_url=NULL,remote_cover_source_url=NULL,remote_cover_attribution=NULL,updated_at=?2,version=version+1 WHERE id=?3 AND trashed_at IS NULL",
+            params![hash,now,entry_id],
+        )?;
+        write_entry_event_with_source(
+            &tx,
+            entry_id,
+            if previous_asset.is_some() || had_remote_cover {
+                "cover_changed"
+            } else {
+                "cover_added"
+            },
+            &now,
+            &format!("import:{batch_id}"),
+            serde_json::json!({}),
+        )?;
+        let after_snapshot = crate::import::load_entry_snapshot(&tx, entry_id)?
+            .ok_or_else(|| StorageError::Conflict)?;
+        let refreshed_after_json = serde_json::to_string(&after_snapshot)?;
+        let changed = tx.execute(
+            "UPDATE import_batch_entry SET after_json=?1,post_version=?2 WHERE batch_id=?3 AND entry_id=?4 AND post_version=?5",
+            params![refreshed_after_json, after_snapshot.entry.version, batch_id, entry_id, batch_post_version],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::Conflict);
+        }
+        Self::commit_version(tx)?;
+        self.load_library()
+    }
+
+    fn save_entry_inner(
+        &mut self,
+        expected_revision: i64,
+        entry: EntryInput,
+        cover_asset: Option<(String, String, String, usize, u32, u32)>,
+    ) -> Result<LibraryState, StorageError> {
         validate_entry(&entry)?;
         let now = now_rfc3339();
         let tx = self.conn.transaction()?;
         Self::check_version(&tx, expected_revision)?;
+        let cover_asset_id = cover_asset
+            .as_ref()
+            .map(|(hash, _, _, _, _, _)| hash.as_str())
+            .or(entry.cover_asset_id.as_deref());
+        if let Some((hash, relative, mime_type, byte_length, width, height)) = &cover_asset {
+            tx.execute(
+                "INSERT OR IGNORE INTO assets(hash,relative_path,mime_type,byte_length,width,height,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![hash,relative,mime_type,*byte_length as i64,*width as i64,*height as i64,now_epoch()],
+            )?;
+        }
         if let Some(type_id) = &entry.media_type_id {
             let active: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM media_type WHERE id=?1 AND archived_at IS NULL)",
@@ -1197,14 +1548,16 @@ impl Storage {
                 ));
             }
         }
-        if let Some(asset_id) = &entry.cover_asset_id {
-            let exists: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM assets WHERE hash=?1)",
-                [asset_id],
-                |row| row.get(0),
-            )?;
-            if !exists {
-                return Err(StorageError::AssetUnavailable);
+        if cover_asset.is_none() {
+            if let Some(asset_id) = &entry.cover_asset_id {
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM assets WHERE hash=?1)",
+                    [asset_id],
+                    |row| row.get(0),
+                )?;
+                if !exists {
+                    return Err(StorageError::AssetUnavailable);
+                }
             }
         }
         for (criterion_id, score) in &entry.criterion_ratings {
@@ -1260,8 +1613,62 @@ impl Storage {
             "INSERT INTO entry(id,title,disposition,media_type_id,overall_rating,cover_asset_id,release_year,release_month,release_day,release_precision,review_text,short_label,created_at,updated_at,version,trashed_at,import_order)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,NULL,?15)
              ON CONFLICT(id) DO UPDATE SET title=excluded.title,disposition=excluded.disposition,media_type_id=excluded.media_type_id,overall_rating=excluded.overall_rating,cover_asset_id=excluded.cover_asset_id,release_year=excluded.release_year,release_month=excluded.release_month,release_day=excluded.release_day,release_precision=excluded.release_precision,review_text=excluded.review_text,short_label=excluded.short_label,updated_at=excluded.updated_at,version=entry.version+1,trashed_at=NULL",
-            params![entry.id,entry.title.trim(),entry.disposition,entry.media_type_id,entry.overall_rating,entry.cover_asset_id,release.map(|d|d.year),release.and_then(|d|d.month),release.and_then(|d|d.day),release.map(|d|d.precision.as_str()),entry.review_text,entry.short_label,previous.as_ref().map(|row| row.4.as_str()).unwrap_or(&now),now,import_order],
+            params![entry.id,entry.title.trim(),entry.disposition,entry.media_type_id,entry.overall_rating,cover_asset_id,release.map(|d|d.year),release.and_then(|d|d.month),release.and_then(|d|d.day),release.map(|d|d.precision.as_str()),entry.review_text,entry.short_label,previous.as_ref().map(|row| row.4.as_str()).unwrap_or(&now),now,import_order],
         )?;
+        if let Some(identities) = &entry.external_identities {
+            for identity in identities {
+                let owner: Option<(String, Option<String>)> = tx
+                    .query_row(
+                        "SELECT identity.entry_id,entry.trashed_at FROM external_identity AS identity JOIN entry ON entry.id=identity.entry_id WHERE identity.provider=?1 AND identity.entity_kind=?2 AND identity.external_id=?3",
+                        params![identity.provider, identity.entity_kind, identity.external_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((owner_id, trashed_at)) = owner {
+                    if owner_id != entry.id {
+                        if trashed_at.is_some() {
+                            tx.execute(
+                                "DELETE FROM external_identity WHERE provider=?1 AND entity_kind=?2 AND external_id=?3 AND entry_id=?4",
+                                params![identity.provider, identity.entity_kind, identity.external_id, owner_id],
+                            )?;
+                        } else {
+                            return Err(StorageError::Validation(
+                                "This provider item is already linked to another entry".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            tx.execute(
+                "DELETE FROM external_identity WHERE entry_id=?1",
+                [&entry.id],
+            )?;
+            for identity in identities {
+                tx.execute(
+                    "INSERT INTO external_identity(provider,entity_kind,external_id,source_url,entry_id) VALUES(?1,?2,?3,?4,?5)",
+                    params![identity.provider,identity.entity_kind,identity.external_id,identity.source_url,entry.id],
+                )?;
+            }
+        }
+        if cover_asset.is_none() {
+            if let Some(cover) = &entry.remote_cover {
+                tx.execute(
+                "UPDATE entry SET remote_cover_provider=?1,remote_cover_url=?2,remote_cover_source_url=?3,remote_cover_attribution=?4 WHERE id=?5",
+                params![cover.provider,cover.url,cover.source_url,cover.attribution,entry.id],
+            )?;
+            }
+            if entry.clear_remote_cover {
+                tx.execute(
+                "UPDATE entry SET remote_cover_provider=NULL,remote_cover_url=NULL,remote_cover_source_url=NULL,remote_cover_attribution=NULL WHERE id=?1",
+                [&entry.id],
+            )?;
+            }
+        } else {
+            tx.execute(
+                "UPDATE entry SET remote_cover_provider=NULL,remote_cover_url=NULL,remote_cover_source_url=NULL,remote_cover_attribution=NULL WHERE id=?1",
+                [&entry.id],
+            )?;
+        }
         for (criterion_id, score) in &entry.criterion_ratings {
             let previous_score: Option<i32> = tx
                 .query_row(
@@ -1399,31 +1806,135 @@ impl Storage {
     ) -> Result<LibraryState, StorageError> {
         let tx = self.conn.transaction()?;
         Self::check_version(&tx, expected_revision)?;
-        let score: Option<i32> = tx
-            .query_row(
-                "SELECT overall_rating FROM entry WHERE id=?1 AND trashed_at IS NULL",
-                [entry_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
         let now = now_rfc3339();
-        let changed = tx.execute(
-            "UPDATE entry SET trashed_at=?1,updated_at=?1,version=version+1 WHERE id=?2 AND trashed_at IS NULL",
-            params![now,entry_id],
-        )?;
-        if changed == 0 {
-            return Err(StorageError::Validation("Entry was not found".into()));
-        }
+        let score = trash_entry_in_transaction(&tx, entry_id, &now)?;
         if let Some(score) = score {
-            tx.execute("DELETE FROM ranking_fit WHERE score=?1", [score])?;
-            tx.execute(
-                "DELETE FROM ranking_boundary WHERE first_id=?1 OR second_id=?1",
-                [entry_id],
-            )?;
-            tx.execute("UPDATE ranking_tier_state SET input_sequence=input_sequence+1,fitted_sequence=0,pending_reconcile=0,order_revision=order_revision+1 WHERE score=?1",[score])?;
+            invalidate_ranking_score(&tx, score, Some(entry_id))?;
         }
-        write_entry_event(&tx, entry_id, "trashed", &now, serde_json::json!({}))?;
+        Self::commit_version(tx)?;
+        self.load_library()
+    }
+
+    /// Apply one all-or-nothing edit or trash operation to a selection.
+    pub fn batch_update_entries(
+        &mut self,
+        input: BatchEntryUpdateInput,
+    ) -> Result<LibraryState, StorageError> {
+        validate_batch_entry_update(&input)?;
+        let tx = self.conn.transaction()?;
+        Self::check_version(&tx, input.expected_revision)?;
+        if let Some(media_type_id) = input.media_type_id.as_deref() {
+            let active: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM media_type WHERE id=?1 AND archived_at IS NULL)",
+                [media_type_id],
+                |row| row.get(0),
+            )?;
+            if !active {
+                return Err(StorageError::Validation("Unknown media type".into()));
+            }
+        }
+
+        let mut selected = Vec::with_capacity(input.entry_ids.len());
+        for entry_id in &input.entry_ids {
+            let state: Option<(Option<i32>, String, Option<String>, Option<String>, bool)> = tx
+                .query_row(
+                    "SELECT overall_rating,disposition,media_type_id,cover_asset_id,(remote_cover_url IS NOT NULL) FROM entry WHERE id=?1 AND trashed_at IS NULL",
+                    [entry_id],
+                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+                )
+                .optional()?;
+            let state = state.ok_or_else(|| {
+                StorageError::Validation(
+                    "One or more selected items are no longer in the library".into(),
+                )
+            })?;
+            selected.push((entry_id.clone(), state));
+        }
+
+        let now = now_rfc3339();
+        let mut changed = false;
+        let mut dirty_scores = HashSet::new();
+        if input.trash {
+            for (entry_id, (rating, _, _, _, _)) in &selected {
+                let score = trash_entry_in_transaction(&tx, entry_id, &now)?;
+                if let Some(score) = score.or(*rating) {
+                    dirty_scores.insert((score, entry_id.as_str()));
+                }
+                changed = true;
+            }
+        } else {
+            for (entry_id, (old_rating, old_disposition, old_type, old_cover, had_remote_cover)) in
+                &selected
+            {
+                let new_type = input.media_type_id.as_deref().or(old_type.as_deref());
+                let new_disposition = input.disposition.as_deref().unwrap_or(old_disposition);
+                let new_rating = if new_disposition == "experienced" {
+                    *old_rating
+                } else {
+                    None
+                };
+                let clear_cover = input.remove_covers && (old_cover.is_some() || *had_remote_cover);
+                let row_changed = new_type != old_type.as_deref()
+                    || new_disposition != old_disposition
+                    || new_rating != *old_rating
+                    || clear_cover;
+                if !row_changed {
+                    continue;
+                }
+
+                tx.execute(
+                    "UPDATE entry SET media_type_id=?1,disposition=?2,overall_rating=?3,cover_asset_id=CASE WHEN ?4 THEN NULL ELSE cover_asset_id END,remote_cover_provider=CASE WHEN ?4 THEN NULL ELSE remote_cover_provider END,remote_cover_url=CASE WHEN ?4 THEN NULL ELSE remote_cover_url END,remote_cover_source_url=CASE WHEN ?4 THEN NULL ELSE remote_cover_source_url END,remote_cover_attribution=CASE WHEN ?4 THEN NULL ELSE remote_cover_attribution END,updated_at=?5,version=version+1 WHERE id=?6 AND trashed_at IS NULL",
+                    params![new_type,new_disposition,new_rating,clear_cover,now,entry_id],
+                )?;
+
+                if old_disposition != new_disposition || *old_rating != new_rating {
+                    write_entry_event(
+                        &tx,
+                        entry_id,
+                        "rating_changed",
+                        &now,
+                        serde_json::json!({"oldRating": old_rating, "newRating": new_rating, "oldDisposition": old_disposition, "newDisposition": new_disposition}),
+                    )?;
+                }
+                if old_type.as_deref() != new_type {
+                    write_entry_event(
+                        &tx,
+                        entry_id,
+                        "type_changed",
+                        &now,
+                        serde_json::json!({"oldTypeId": old_type, "newTypeId": new_type}),
+                    )?;
+                }
+                if clear_cover {
+                    write_entry_event(&tx, entry_id, "cover_removed", &now, serde_json::json!({}))?;
+                }
+
+                if *old_rating != new_rating {
+                    if let Some(score) = old_rating {
+                        tx.execute("DELETE FROM ranking_entry WHERE entry_id=?1", [entry_id])?;
+                        dirty_scores.insert((*score, entry_id.as_str()));
+                    }
+                }
+                let old_group = entry_group(old_disposition, *old_rating);
+                let new_group = entry_group(new_disposition, new_rating);
+                if old_group != new_group {
+                    let order_key = crate::ranking::next_order_key(&tx, &new_group)?;
+                    tx.execute(
+                        "UPDATE group_order SET group_id=?1,order_key=?2 WHERE entry_id=?3",
+                        params![new_group, order_key, entry_id],
+                    )?;
+                }
+                changed = true;
+            }
+        }
+
+        for (score, entry_id) in dirty_scores {
+            invalidate_ranking_score(&tx, score, Some(entry_id))?;
+        }
+        if !changed {
+            tx.commit()?;
+            return self.load_library();
+        }
         Self::commit_version(tx)?;
         self.load_library()
     }
@@ -1644,6 +2155,19 @@ impl Storage {
         let bytes = BASE64
             .decode(base64)
             .map_err(|_| StorageError::Validation("Cover is not valid base64".into()))?;
+        self.save_entry_cover_bytes(expected_revision, entry_id, mime_type, &bytes)
+    }
+
+    /// Store already downloaded provider cover bytes without serializing them
+    /// through the webview's base64 bridge.
+    pub fn save_entry_cover_bytes(
+        &mut self,
+        expected_revision: i64,
+        entry_id: &str,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> Result<LibraryState, StorageError> {
+        self.ensure_version(expected_revision)?;
         let (extension, width, height) = validate_image(mime_type, &bytes)?;
         let hash = hex_hash(&bytes);
         let relative = format!("assets/{hash}.{extension}");
@@ -1661,7 +2185,7 @@ impl Storage {
         tx.execute("INSERT OR IGNORE INTO assets(hash,relative_path,mime_type,byte_length,width,height,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![hash,relative,mime_type,bytes.len() as i64,width as i64,height as i64,now_epoch()])?;
         let now = now_rfc3339();
         tx.execute(
-            "UPDATE entry SET cover_asset_id=?1,updated_at=?2,version=version+1 WHERE id=?3",
+            "UPDATE entry SET cover_asset_id=?1,remote_cover_provider=NULL,remote_cover_url=NULL,remote_cover_source_url=NULL,remote_cover_attribution=NULL,updated_at=?2,version=version+1 WHERE id=?3",
             params![hash, now, entry_id],
         )?;
         Self::commit_version(tx)?;
@@ -1669,28 +2193,9 @@ impl Storage {
     }
 
     pub fn load_entry_cover(&self, entry_id: &str) -> Result<Option<String>, StorageError> {
-        let asset: Option<(String, String)> = self.conn.query_row(
-            "SELECT a.hash,a.relative_path FROM assets a JOIN entry e ON e.cover_asset_id=a.hash WHERE e.id=?1 AND e.trashed_at IS NULL",
-            [entry_id],
-            |row| Ok((row.get(0)?,row.get(1)?)),
-        ).optional()?;
-        match asset {
-            Some((hash, relative)) => {
-                let bytes = self.read_asset(&hash, &relative)?;
-                let image =
-                    image::load_from_memory(&bytes).map_err(|_| StorageError::AssetUnavailable)?;
-                let mut derivative = Cursor::new(Vec::new());
-                image
-                    .thumbnail(900, 1200)
-                    .write_to(&mut derivative, ImageFormat::Png)
-                    .map_err(|_| StorageError::AssetUnavailable)?;
-                Ok(Some(format!(
-                    "data:image/png;base64,{}",
-                    BASE64.encode(derivative.into_inner())
-                )))
-            }
-            None => Ok(None),
-        }
+        self.prepare_entry_cover(entry_id)?
+            .map(CoverImageJob::render)
+            .transpose()
     }
 
     pub fn save_home(
@@ -2016,45 +2521,7 @@ impl Storage {
     }
 
     fn stage_asset(&self, relative: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        let path = self.root.join(relative);
-        if path.exists() {
-            if path.symlink_metadata()?.file_type().is_file()
-                && hex_hash(&fs::read(&path)?) == hex_hash(bytes)
-            {
-                return Ok(());
-            }
-            return Err(StorageError::AssetUnavailable);
-        }
-        let temp = self.root.join("assets").join(format!(
-            ".asset-{}-{}.tmp",
-            std::process::id(),
-            now_nanos()
-        ));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
-        if let Err(error) = (|| -> Result<(), std::io::Error> {
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            // A rename can replace a destination created after the check above.
-            // Linking creates the final path only when it is still absent.
-            fs::hard_link(&temp, &path)?;
-            Ok(())
-        })() {
-            let _ = fs::remove_file(&temp);
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                if path.symlink_metadata()?.file_type().is_file()
-                    && hex_hash(&fs::read(&path)?) == hex_hash(bytes)
-                {
-                    return Ok(());
-                }
-                return Err(StorageError::AssetUnavailable);
-            }
-            return Err(error.into());
-        }
-        fs::remove_file(&temp)?;
-        Ok(())
+        stage_asset_at(&self.root, relative, bytes)
     }
 
     fn read_asset(&self, hash: &str, relative: &str) -> Result<Vec<u8>, StorageError> {
@@ -2149,6 +2616,56 @@ fn entry_group(disposition: &str, rating: Option<i32>) -> String {
         _ => "unrated".into(),
     }
 }
+
+fn trash_entry_in_transaction(
+    tx: &Transaction<'_>,
+    entry_id: &str,
+    now: &str,
+) -> Result<Option<i32>, StorageError> {
+    let score: Option<Option<i32>> = tx
+        .query_row(
+            "SELECT overall_rating FROM entry WHERE id=?1 AND trashed_at IS NULL",
+            [entry_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(score) = score else {
+        return Err(StorageError::Validation("Entry was not found".into()));
+    };
+    tx.execute(
+        "UPDATE entry SET trashed_at=?1,updated_at=?1,version=version+1 WHERE id=?2 AND trashed_at IS NULL",
+        params![now, entry_id],
+    )?;
+    // Trashed works are hidden from matching, so their provider IDs must be
+    // available for a later add from search or a fresh import.
+    tx.execute(
+        "DELETE FROM external_identity WHERE entry_id=?1",
+        [entry_id],
+    )?;
+    tx.execute(
+        "DELETE FROM import_source_activity WHERE entry_id=?1",
+        [entry_id],
+    )?;
+    write_entry_event(tx, entry_id, "trashed", now, serde_json::json!({}))?;
+    Ok(score)
+}
+
+fn invalidate_ranking_score(
+    tx: &Transaction<'_>,
+    score: i32,
+    entry_id: Option<&str>,
+) -> Result<(), StorageError> {
+    tx.execute("DELETE FROM ranking_fit WHERE score=?1", [score])?;
+    if let Some(entry_id) = entry_id {
+        tx.execute(
+            "DELETE FROM ranking_boundary WHERE first_id=?1 OR second_id=?1",
+            [entry_id],
+        )?;
+    }
+    tx.execute("UPDATE ranking_tier_state SET input_sequence=input_sequence+1,fitted_sequence=0,pending_reconcile=0,order_revision=order_revision+1 WHERE score=?1", [score])?;
+    Ok(())
+}
+
 fn write_entry_event(
     tx: &Transaction<'_>,
     entry_id: &str,
@@ -2156,9 +2673,20 @@ fn write_entry_event(
     occurred_at: &str,
     payload: serde_json::Value,
 ) -> Result<(), StorageError> {
+    write_entry_event_with_source(tx, entry_id, kind, occurred_at, "user", payload)
+}
+
+fn write_entry_event_with_source(
+    tx: &Transaction<'_>,
+    entry_id: &str,
+    kind: &str,
+    occurred_at: &str,
+    source: &str,
+    payload: serde_json::Value,
+) -> Result<(), StorageError> {
     tx.execute(
-        "INSERT INTO entry_event(id,entry_id,kind,occurred_at,recorded_at,source,payload_json) VALUES(?1,?2,?3,?4,?4,'user',?5)",
-        params![format!("event-{}",now_nanos()),entry_id,kind,occurred_at,serde_json::to_string(&payload)?],
+        "INSERT INTO entry_event(id,entry_id,kind,occurred_at,recorded_at,source,payload_json) VALUES(?1,?2,?3,?4,?4,?5,?6)",
+        params![format!("event-{}",now_nanos()),entry_id,kind,occurred_at,source,serde_json::to_string(&payload)?],
     )?;
     Ok(())
 }
@@ -2996,6 +3524,9 @@ mod tests {
                     media_type_id: Some("anime".into()),
                     overall_rating: None,
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: Some(ReleaseDate {
                         year: 2016,
                         month: None,
@@ -3123,6 +3654,9 @@ mod tests {
                     media_type_id: None,
                     overall_rating: None,
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: None,
                     review_text: String::new(),
                     short_label: None,
@@ -3213,6 +3747,9 @@ mod tests {
             media_type_id: None,
             overall_rating: None,
             cover_asset_id: None,
+            external_identities: None,
+            remote_cover: None,
+            clear_remote_cover: false,
             release_date: None,
             review_text: String::new(),
             short_label: None,
@@ -3368,6 +3905,9 @@ mod tests {
                     media_type_id: Some("anime".into()),
                     overall_rating: Some(7),
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: None,
                     review_text: String::new(),
                     short_label: None,
@@ -3392,6 +3932,9 @@ mod tests {
                     media_type_id: Some("anime".into()),
                     overall_rating: Some(7),
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: None,
                     review_text: String::new(),
                     short_label: None,
@@ -3450,6 +3993,9 @@ mod tests {
                     media_type_id: Some("literature".into()),
                     overall_rating: Some(9),
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: Some(ReleaseDate {
                         year: 2024,
                         month: Some(2),

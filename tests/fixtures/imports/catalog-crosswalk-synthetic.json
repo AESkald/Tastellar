@@ -1,0 +1,18 @@
+{
+  "fixtureOnly": true,
+  "note": "Fictional local mock response; not returned by IMDb, TMDb, or a live API.",
+  "results": [
+    {
+      "provider": "tmdb",
+      "id": "movie-fixture-0001",
+      "entityKind": "movie",
+      "title": "Glass Harbour",
+      "originalTitle": "Гавань из стекла",
+      "year": 2019,
+      "externalIds": {
+        "imdbId": "tt99000001"
+      },
+      "coverUrl": null
+    }
+  ]
+}

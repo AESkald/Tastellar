@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownUp,
   BookOpen,
+  CheckSquare,
   ChevronLeft,
   ChevronRight,
   CircleHelp,
@@ -22,12 +23,16 @@ import { LibrarySidebar } from "./LibrarySidebar";
 import { LibraryDetailsPanel } from "./LibraryDetailsPanel";
 import { LibraryWorkDetails } from "./LibraryWorkDetails";
 import { LibraryUniverse } from "./LibraryUniverse";
+import { ImportWizard } from "./ImportWizard";
 import {
   createEmptyLibraryEntry,
   LibraryEntryEditor,
   readLibraryCover,
 } from "./LibraryEntryEditor";
 import { SelectControl } from "../../shared/ui/SelectControl";
+import { batchUpdateEntries, peekEntryCover } from "../../shared/bridge/libraryBridge";
+import { catalogCapabilities } from "../../shared/bridge/catalogBridge";
+import type { CatalogCapability } from "../../shared/bridge/catalogTypes";
 import { errorMessage } from "../../shared/bridge/client";
 import "./library.css";
 import type {
@@ -110,8 +115,9 @@ function filtersMatch(
     return false;
   if (filters.maxYear && (year === undefined || year > Number(filters.maxYear)))
     return false;
-  if (filters.cover === "has" && !entry.coverAssetId) return false;
-  if (filters.cover === "missing" && entry.coverAssetId) return false;
+  const hasCover = Boolean(entry.coverAssetId || entry.remoteCover);
+  if (filters.cover === "has" && !hasCover) return false;
+  if (filters.cover === "missing" && hasCover) return false;
   if (filters.criteriaComplete) {
     const type = state?.mediaTypes.find(
       (item) => item.id === entry.mediaTypeId,
@@ -133,6 +139,8 @@ function getInitialGroup(entries: LibraryEntry[]) {
     return "planned";
   if (entries.some((entry) => entry.disposition === "dropped"))
     return "dropped";
+  if (entries.some((entry) => entry.disposition === "experienced"))
+    return "unrated";
   return "planned";
 }
 
@@ -171,7 +179,7 @@ export function Library({
     mimeType: string,
     base64: string,
   ) => Promise<void>;
-  onLoadCover?: (entryId: string) => Promise<string | null>;
+  onLoadCover?: (entryId: string, assetId?: string | null) => Promise<string | null>;
   onLibraryMutation: (
     job: (current: LibraryState) => Promise<LibraryState>,
   ) => Promise<LibraryState>;
@@ -240,15 +248,31 @@ export function Library({
   const [panelWidth, setPanelWidth] = useState(detailsWidth);
   const [editorEntry, setEditorEntry] = useState<LibraryEntry | null>(null);
   const [isNewEntry, setIsNewEntry] = useState(false);
+  const [importWizardOpen, setImportWizardOpen] = useState(false);
+  const [catalogProviders, setCatalogProviders] = useState<CatalogCapability[]>([]);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkIds, setBulkIds] = useState<string[]>([]);
+  const [bulkType, setBulkType] = useState("");
+  const [bulkDisposition, setBulkDisposition] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const [searchResultSelection, setSearchResultSelection] = useState<
     string | null
   >(null);
   const priorSearch = useRef(settledSearch);
-  const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  const [coverUrl, setCoverUrl] = useState<string | null>(() => {
+    const selected = state.entries.find((entry) => entry.id === initialView?.selectedEntryId);
+    return selected?.coverAssetId ? peekEntryCover(selected.id, selected.coverAssetId) : null;
+  });
   const activeEntry =
     state.entries.find((entry) => entry.id === selectedEntryId) ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    void catalogCapabilities()
+      .then((capabilities) => { if (!cancelled) setCatalogProviders(capabilities); })
+      .catch(() => { if (!cancelled) setCatalogProviders([]); });
+    return () => { cancelled = true; };
+  }, []);
   const rankIndex = useMemo(
     () => buildLibraryRankIndex(state.entries, rankingTiers),
     [rankingTiers, state.entries],
@@ -270,7 +294,7 @@ export function Library({
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (event.metaKey && event.key.toLocaleLowerCase("en") === "f") {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase("en") === "f") {
         event.preventDefault();
         document.getElementById("library-search")?.focus();
       }
@@ -301,22 +325,28 @@ export function Library({
   }, []);
 
   useEffect(() => {
-    if (!activeEntry?.coverAssetId || !onLoadCover) {
+    if (!activeEntry) {
       setCoverUrl(null);
       return;
     }
+    const remoteUrl = activeEntry.remoteCover?.url ?? null;
+    if (!activeEntry.coverAssetId || !onLoadCover) {
+      setCoverUrl(remoteUrl);
+      return;
+    }
     let cancelled = false;
-    void onLoadCover(activeEntry.id)
+    setCoverUrl(peekEntryCover(activeEntry.id, activeEntry.coverAssetId) ?? remoteUrl);
+    void onLoadCover(activeEntry.id, activeEntry.coverAssetId)
       .then((url) => {
-        if (!cancelled) setCoverUrl(url);
+        if (!cancelled) setCoverUrl(url ?? remoteUrl);
       })
       .catch(() => {
-        if (!cancelled) setCoverUrl(null);
+        if (!cancelled) setCoverUrl(remoteUrl);
       });
     return () => {
       cancelled = true;
     };
-  }, [activeEntry?.id, activeEntry?.coverAssetId, onLoadCover]);
+  }, [activeEntry?.id, activeEntry?.coverAssetId, activeEntry?.remoteCover?.url, onLoadCover]);
 
   useEffect(() => {
     onViewChange?.({
@@ -463,10 +493,14 @@ export function Library({
         rating: entry.overallRating,
         displayOrder: index,
         mediaTypeId: entry.mediaTypeId,
-        coverAssetId: entry.coverAssetId,
+        coverAssetId: entry.coverAssetId ?? (entry.remoteCover?.url ? `remote-cover:${entry.remoteCover.url}` : null),
       })),
     [rankIndex.withinScore, sceneEntries],
   );
+  const loadSceneCover = useCallback((entryId: string, assetId?: string | null) => {
+    if (assetId?.startsWith("remote-cover:")) return Promise.resolve(assetId.slice("remote-cover:".length));
+    return onLoadCover ? onLoadCover(entryId, assetId) : Promise.resolve(null);
+  }, [onLoadCover]);
   const sceneVisibleIds = useMemo(
     () => new Set(groupEntries.map((entry) => entry.id)),
     [groupEntries],
@@ -483,10 +517,31 @@ export function Library({
     filters.cover !== "any";
 
   const selectEntry = (entry: LibraryEntry, fromSearch = false) => {
+    if (bulkMode) {
+      setBulkIds((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id]);
+      onDetailsOpenChange(true);
+      return;
+    }
     setSelectedEntryId(entry.id);
     setSearchResultSelection(fromSearch ? entry.id : null);
     setPanelMode("details");
     onDetailsOpenChange(true);
+  };
+  const applyBulk = async (action: "edit" | "covers" | "trash") => {
+    const entryIds = bulkIds.filter((id) => state.entries.some((entry) => entry.id === id));
+    if (!entryIds.length) return;
+    setBusy(true);
+    setActionError("");
+    try {
+      await onLibraryMutation((current) => batchUpdateEntries({ expectedRevision: current.revision, entryIds,
+        ...(action === "trash" ? { trash: true } : action === "covers" ? { removeCovers: true } : {
+          ...(bulkType ? { mediaTypeId: bulkType } : {}),
+          ...(bulkDisposition ? { disposition: bulkDisposition as LibraryEntry["disposition"] } : {}),
+        }),
+      }));
+      if (action === "trash") setBulkIds([]);
+    } catch (cause) { setActionError(errorMessage(cause)); }
+    finally { setBusy(false); }
   };
   const createEntry = () => {
     setActionError("");
@@ -494,11 +549,12 @@ export function Library({
     setEditorEntry(createEmptyLibraryEntry());
   };
   const editEntry = (entry: LibraryEntry) => {
+    if (bulkMode) return;
     setIsNewEntry(false);
     setEditorEntry(structuredClone(entry));
     setActionError("");
   };
-  const saveEntry = async (entry: LibraryEntry, coverFile: File | null) => {
+  const saveEntry = async (entry: LibraryEntry, coverFile: File | null, clearRemoteCover = false) => {
     setBusy(true);
     setActionError("");
     try {
@@ -515,6 +571,9 @@ export function Library({
         shortLabel: entry.shortLabel?.trim() || null,
         tagIds: entry.tagIds,
         criterionRatings: entry.criterionRatings,
+        externalIdentities: entry.externalIdentities ?? [],
+        remoteCover: entry.remoteCover ?? null,
+        ...(clearRemoteCover ? { clearRemoteCover: true } : {}),
       });
       if (coverFile && onSaveCover) {
         await onSaveCover(
@@ -755,6 +814,9 @@ export function Library({
             </p>
           </div>
           <div className="library-heading-actions">
+            <button className={`icon-button ${bulkMode ? "active" : ""}`} title={t("library.bulk.select")} aria-label={t("library.bulk.select")} aria-pressed={bulkMode} onClick={() => {
+              setBulkMode((value) => !value); setBulkIds([]); setActionError(""); onDetailsOpenChange(true);
+            }}><CheckSquare size={17} /></button>
             <button
               className={`icon-button ${hasActiveFilters ? "active" : ""}`}
               aria-label={t("library.ui.openFilters")}
@@ -974,7 +1036,7 @@ export function Library({
             quality={graphics}
             reducedMotion={reducedMotion}
             onQualityChange={onGraphicsChange}
-            onLoadCover={onLoadCover}
+            onLoadCover={loadSceneCover}
             onSelect={(id) => {
               const entry = state.entries.find((item) => item.id === id);
               if (entry) selectEntry(entry);
@@ -1010,6 +1072,7 @@ export function Library({
               state={state}
               withinScoreRanks={rankIndex.withinScore}
               selectedId={selectedEntryId}
+              selectedIds={bulkMode ? bulkIds : undefined}
               columns={tableColumns}
               onSelect={selectEntry}
               onEdit={editEntry}
@@ -1021,10 +1084,11 @@ export function Library({
               {groupEntries.map((entry) => (
                 <article
                   key={entry.id}
-                  className={`library-work-card ${selectedEntryId === entry.id ? "selected" : ""} ${selectedOutsideFilters && selectedEntryId === entry.id ? "outside-filter" : ""}`}
+                  className={`library-work-card ${(bulkMode ? bulkIds.includes(entry.id) : selectedEntryId === entry.id) ? "selected" : ""} ${selectedOutsideFilters && selectedEntryId === entry.id ? "outside-filter" : ""}`}
                 >
                   <button
                     className="work-card-select"
+                    aria-pressed={bulkMode ? bulkIds.includes(entry.id) : undefined}
                     onClick={() => selectEntry(entry)}
                     onDoubleClick={() => editEntry(entry)}
                     aria-label={t("library.ui.cardAria", {
@@ -1041,6 +1105,7 @@ export function Library({
                       selectedEntryId === entry.id ? "true" : undefined
                     }
                   >
+                    {bulkMode && <span className={`bulk-selection-mark ${bulkIds.includes(entry.id) ? "checked" : ""}`} aria-hidden="true">{bulkIds.includes(entry.id) ? "✓" : ""}</span>}
                     {listMode === "covers" && (
                       <CoverGridTile
                         entry={entry}
@@ -1151,7 +1216,7 @@ export function Library({
                 : t("library.ui.workDetails")
           }
           title={
-            panelMode === "filters"
+            bulkMode ? t("library.bulk.selected", { count: bulkIds.length }) : panelMode === "filters"
               ? t("library.ui.filters")
               : panelMode === "transfer"
                 ? t("library.ui.importExport")
@@ -1163,7 +1228,18 @@ export function Library({
           }}
           resizer={panelResizeHandle}
         >
-          {panelMode === "filters" ? (
+          {bulkMode ? <div className="library-bulk-panel">
+            <p>{t("library.bulk.hint")}</p>
+            <div className="bulk-selection-actions"><button className="text-button" onClick={() => setBulkIds((current) => [...new Set([...current, ...groupEntries.map((entry) => entry.id)])])}>{t("library.bulk.selectVisible")}</button><button className="text-button" onClick={() => setBulkIds([])}>{t("library.bulk.clear")}</button></div>
+            <label className="field"><span>{t("library.catalog.mediaType")}</span><SelectControl value={bulkType} onValueChange={setBulkType}><option value="">{t("library.bulk.keep")}</option>{state.mediaTypes.filter((item) => !item.archivedAt).map((item) => <option key={item.id} value={item.id}>{mediaTypeName(item.id, item.name)}</option>)}</SelectControl></label>
+            <label className="field"><span>{t("library.import.status")}</span><SelectControl value={bulkDisposition} onValueChange={setBulkDisposition}><option value="">{t("library.bulk.keep")}</option><option value="experienced">{t("library.ui.alreadyExperienced")}</option><option value="planned">{t("library.ui.group.planned")}</option><option value="dropped">{t("library.ui.group.dropped")}</option></SelectControl></label>
+            {bulkDisposition && bulkDisposition !== "experienced" && <p className="field-hint">{t("library.bulk.ratingHint")}</p>}
+            {actionError && <p role="alert" className="error-message">{actionError}</p>}
+            <button className="button primary" disabled={busy || !bulkIds.length || (!bulkType && !bulkDisposition)} onClick={() => void applyBulk("edit")}>{t("library.bulk.apply")}</button>
+            <button className="button secondary" disabled={busy || !bulkIds.length} onClick={() => void applyBulk("covers")}>{t("library.bulk.removeCovers")}</button>
+            <button className="text-button danger-link" disabled={busy || !bulkIds.length} onClick={() => void applyBulk("trash")}>{t("library.ui.moveToTrash")}</button>
+            <button className="text-button" onClick={() => { setBulkMode(false); setBulkIds([]); }}>{t("library.bulk.done")}</button>
+          </div> : panelMode === "filters" ? (
             <LibraryFilterPanel
               state={state}
               filters={filters}
@@ -1175,6 +1251,7 @@ export function Library({
             <ImportExportPanel
               onExport={onExport}
               onImport={onImport}
+              onImportFromServices={() => setImportWizardOpen(true)}
               isNative={isNative}
             />
           ) : activeEntry ? (
@@ -1214,8 +1291,10 @@ export function Library({
           busy={busy}
           error={actionError}
           hasCoverStorage={Boolean(onSaveCover)}
+          catalogCapabilities={catalogProviders}
+          onCapabilitiesChange={setCatalogProviders}
           onCancel={() => setEditorEntry(null)}
-          onSave={(entry, file) => void saveEntry(entry, file)}
+          onSave={(entry, file, clearRemoteCover) => void saveEntry(entry, file, clearRemoteCover)}
           onCreateTag={onSaveTag}
         />
       )}
@@ -1224,6 +1303,26 @@ export function Library({
           state={state}
           mutateLibrary={onLibraryMutation}
           onClose={() => setVocabularyOpen(false)}
+        />
+      )}
+      {importWizardOpen && (
+        <ImportWizard
+          state={state}
+          capabilities={catalogProviders}
+          onClose={() => setImportWizardOpen(false)}
+          onCommitLibrary={async (library) => {
+            const nextState = await onLibraryMutation(async () => library);
+            if (nextState.entries.some((entry) => entryGroupId(entry) === activeGroupId))
+              return;
+            const importedEntry = nextState.entries.find(
+              (entry) => !state.entries.some((current) => current.id === entry.id),
+            );
+            setActiveGroupId(
+              importedEntry
+                ? entryGroupId(importedEntry)
+                : getInitialGroup(nextState.entries),
+            );
+          }}
         />
       )}
     </div>
@@ -1473,34 +1572,40 @@ function CoverGridTile({
 }: {
   entry: LibraryEntry;
   state: LibraryState;
-  onLoadCover?: (entryId: string) => Promise<string | null>;
+  onLoadCover?: (entryId: string, assetId?: string | null) => Promise<string | null>;
 }) {
-  const [image, setImage] = useState<string | null>(null);
+  const imageKey = `${entry.coverAssetId ?? ""}\0${entry.remoteCover?.url ?? ""}`;
+  const [imageState, setImageState] = useState(() => ({
+    key: imageKey,
+    source: entry.coverAssetId ? peekEntryCover(entry.id, entry.coverAssetId) : entry.remoteCover?.url ?? null,
+  }));
+  const image = imageState.key === imageKey ? imageState.source : null;
   useEffect(() => {
     if (!entry.coverAssetId || !onLoadCover) {
-      setImage(null);
+      setImageState({ key: imageKey, source: entry.remoteCover?.url ?? null });
       return;
     }
     let cancelled = false;
-    void onLoadCover(entry.id)
+    setImageState({ key: imageKey, source: peekEntryCover(entry.id, entry.coverAssetId) ?? entry.remoteCover?.url ?? null });
+    void onLoadCover(entry.id, entry.coverAssetId)
       .then((value) => {
-        if (!cancelled) setImage(value);
+        if (!cancelled) setImageState({ key: imageKey, source: value ?? entry.remoteCover?.url ?? null });
       })
       .catch(() => {
-        if (!cancelled) setImage(null);
+        if (!cancelled) setImageState({ key: imageKey, source: entry.remoteCover?.url ?? null });
       });
     return () => {
       cancelled = true;
     };
-  }, [entry.coverAssetId, entry.id, onLoadCover]);
+  }, [entry.coverAssetId, entry.id, entry.remoteCover?.url, imageKey, onLoadCover]);
   const type = state.mediaTypes.find((item) => item.id === entry.mediaTypeId);
   return (
     <span
-      className={`work-cover-tile ${entry.coverAssetId ? "has-cover" : "no-cover"}`}
+      className={`work-cover-tile ${entry.coverAssetId || entry.remoteCover ? "has-cover" : "no-cover"}`}
     >
       {image ? (
-        <img src={image} alt="" />
-      ) : entry.coverAssetId ? (
+        <img src={image} alt="" decoding="async" referrerPolicy="no-referrer" onError={() => setImageState({ key: imageKey, source: null })} />
+      ) : entry.coverAssetId || entry.remoteCover ? (
         <span className="cover-present">
           <ImagePlus size={19} /> {t("library.ui.coverSaved")}
         </span>
@@ -1519,6 +1624,7 @@ function LibraryTable({
   state,
   withinScoreRanks,
   selectedId,
+  selectedIds,
   columns,
   onSelect,
   onEdit,
@@ -1527,6 +1633,7 @@ function LibraryTable({
   state: LibraryState;
   withinScoreRanks: Map<string, number>;
   selectedId: string | null;
+  selectedIds?: string[];
   columns: string[];
   onSelect: (entry: LibraryEntry) => void;
   onEdit: (entry: LibraryEntry) => void;
@@ -1564,7 +1671,7 @@ function LibraryTable({
       case "added":
         return formatDate(entry.createdAt);
       case "cover":
-        return entry.coverAssetId ? t("library.ui.yes") : t("library.ui.no");
+        return entry.coverAssetId || entry.remoteCover ? t("library.ui.yes") : t("library.ui.no");
       default:
         return entry.title;
     }
@@ -1574,6 +1681,7 @@ function LibraryTable({
       <table className="library-table">
         <thead>
           <tr>
+            {selectedIds && <th aria-label={t("library.bulk.select")} />}
             {enabled.map((column) => (
               <th key={column.id}>{t(column.labelKey)}</th>
             ))}
@@ -1584,8 +1692,8 @@ function LibraryTable({
             <tr
               key={entry.id}
               tabIndex={0}
-              aria-selected={selectedId === entry.id}
-              className={selectedId === entry.id ? "selected" : ""}
+              aria-selected={selectedIds ? selectedIds.includes(entry.id) : selectedId === entry.id}
+              className={(selectedIds ? selectedIds.includes(entry.id) : selectedId === entry.id) ? "selected" : ""}
               onClick={() => onSelect(entry)}
               onDoubleClick={() => onEdit(entry)}
               onKeyDown={(event) => {
@@ -1595,6 +1703,7 @@ function LibraryTable({
                 }
               }}
             >
+              {selectedIds && <td className="bulk-table-select"><input type="checkbox" checked={selectedIds.includes(entry.id)} aria-label={entry.title} onClick={(event) => event.stopPropagation()} onChange={() => onSelect(entry)} /></td>}
               {enabled.map((column) => (
                 <td
                   key={column.id}
@@ -1603,7 +1712,7 @@ function LibraryTable({
                   {column.id === "title" ? (
                     <>
                       <span className="table-cover-dot">
-                        {entry.coverAssetId ? (
+                        {entry.coverAssetId || entry.remoteCover ? (
                           <ImagePlus size={13} />
                         ) : (
                           <MediaTypeIcon

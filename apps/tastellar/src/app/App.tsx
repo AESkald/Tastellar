@@ -48,9 +48,13 @@ import {
 } from "../features/library/LibraryEntryEditor";
 import { buildLibraryRankIndex } from "../features/library/domain/rankDisplay";
 import { Settings } from "../features/settings/Settings";
+import { SupportReminder } from "../features/settings/SupportReminder";
 import { Ranking, type RankingStateView } from "../features/ranking/Ranking";
+import { Analytics } from "../features/analytics/Analytics";
+import { Recap } from "../features/recap/Recap";
 import type { RankingDropPosition } from "../features/ranking/domain/ranking";
 import * as libraryBridge from "../shared/bridge/libraryBridge";
+import { loadRecapCover } from "../shared/bridge/recapBridge";
 import * as rankingBridge from "../shared/bridge/rankingBridge";
 import type { Entry, EntryDraft, LibraryState } from "../shared/bridge/libraryTypes";
 import { t } from "../shared/ui/i18n";
@@ -153,6 +157,7 @@ export function App() {
     workspaceRef = useRef<Workspace | null>(null),
     queue = useRef<Promise<unknown>>(Promise.resolve()),
     libraryViews = useRef<Record<string, LibraryViewSnapshot>>({}),
+    analyticsOpenCounts = useRef<Record<string, number>>({}),
     tabPointerDrag = useRef<TabPointerDrag | null>(null),
     tabDropTargetRef = useRef<TabDropTarget | null>(null),
     libraryViewPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(
@@ -235,6 +240,7 @@ export function App() {
     return serializeOperation(async () => {
       const next = await rankingBridge.loadRanking();
       acceptRankingState(next);
+      setLibraryLoadError("");
       return next;
     });
   }, [acceptRankingState, serializeOperation]);
@@ -443,6 +449,11 @@ export function App() {
       return;
     }
     const ws = currentScroll();
+    const currentTab = ws.tabs.find((tab) => tab.id === ws.activeTabId);
+    if (section === "analytics" && currentTab?.section !== "analytics") {
+      analyticsOpenCounts.current[ws.activeTabId!] =
+        (analyticsOpenCounts.current[ws.activeTabId!] ?? 0) + 1;
+    }
     updateWorkspace({
       ...ws,
       tabs: ws.tabs.map((tab) =>
@@ -594,13 +605,15 @@ export function App() {
     workspace?.tabs[0];
   useEffect(() => {
     if (
-      activeTab?.section === "ranking" &&
+      (activeTab?.section === "ranking" || activeTab?.section === "analytics" || activeTab?.section === "recap") &&
       libraryState &&
       rankingState?.revision !== libraryState.revision
     ) {
-      void refreshRanking().catch((error) =>
-        setSaveError(bridge.errorMessage(error)),
-      );
+      void refreshRanking().catch((error) => {
+        const message = bridge.errorMessage(error);
+        setLibraryLoadError(message);
+        setSaveError(message);
+      });
     }
   }, [activeTab?.section, libraryState?.revision, rankingState?.revision, refreshRanking]);
   const onLibraryViewChange = useCallback(
@@ -710,6 +723,24 @@ export function App() {
       unlisten?.();
     };
   }, [enqueue]);
+  const analyticsConfirmations = state?.preferences.analyticsBoundaryReviews ?? [];
+  const confirmAnalyticsReview = async (fingerprint: string) => {
+    await enqueue((current) => bridge.savePreferences(current.version, {
+      ...current.preferences,
+      analyticsBoundaryReviews: [...new Set([
+        ...(current.preferences.analyticsBoundaryReviews ?? []),
+        fingerprint,
+      ])].slice(-1000),
+    }));
+    await refreshRanking();
+  };
+  const resetAnalyticsReviews = async () => {
+    await enqueue((current) => bridge.savePreferences(current.version, {
+      ...current.preferences,
+      analyticsBoundaryReviews: [],
+    }));
+    await refreshRanking();
+  };
   const saveHome = async (patch: HomePatch) => {
     await enqueue((current) => bridge.saveHome(current.version, patch));
   };
@@ -1038,6 +1069,115 @@ export function App() {
   const selectedRankingEntry = rankingState?.library.entries.find(
     (entry) => entry.id === selectedRankingEntryId,
   );
+  const coverPrewarmEntries = useMemo(() => {
+    if (!libraryState) return [];
+    const entriesById = new Map(libraryState.entries.map((entry) => [entry.id, entry]));
+    const prioritizedIds: string[] = [];
+    const view = activeTab?.section === "library" ? activeTab.libraryView : null;
+    if (view) {
+      if (view.selectedEntryId) prioritizedIds.push(view.selectedEntryId);
+      const { filters, activeGroupId } = view;
+      const inGroup = (entry: Entry) => {
+        const groupId = entry.disposition === "planned"
+          ? "planned"
+          : entry.disposition === "dropped"
+            ? "dropped"
+            : entry.overallRating === null
+              ? "unrated"
+              : `score:${entry.overallRating}`;
+        return activeGroupId === "all" || activeGroupId === groupId;
+      };
+      const matchesSavedFilters = (entry: Entry) => {
+        if (filters.mediaTypes.length) {
+          const noType = filters.mediaTypes.includes("__none__") && entry.mediaTypeId === null;
+          if (!noType && !filters.mediaTypes.includes(entry.mediaTypeId ?? "")) return false;
+        }
+        if (filters.tags.length) {
+          const matchingTags = filters.tags.filter((id) => entry.tagIds.includes(id)).length;
+          if (filters.tagMode === "all" ? matchingTags !== filters.tags.length : matchingTags === 0) return false;
+        }
+        const year = entry.releaseDate?.year;
+        if (filters.minYear && (year === undefined || year < Number(filters.minYear))) return false;
+        if (filters.maxYear && (year === undefined || year > Number(filters.maxYear))) return false;
+        if (filters.cover === "has" && !entry.coverAssetId) return false;
+        if (filters.cover === "missing" && entry.coverAssetId) return false;
+        return true;
+      };
+      prioritizedIds.push(...libraryState.entries
+        .filter((entry) => inGroup(entry) && matchesSavedFilters(entry))
+        .map((entry) => entry.id));
+    }
+    const canonicalPlacedIds = [...(rankingState?.tiers ?? [])]
+      .sort((a, b) => b.score - a.score)
+      .flatMap((tier) => tier.placedIds);
+    prioritizedIds.push(...canonicalPlacedIds);
+    prioritizedIds.push(...libraryState.entries.map((entry) => entry.id));
+    const seen = new Set<string>();
+    const result = prioritizedIds.flatMap((id) => {
+      const entry = entriesById.get(id);
+      if (!entry?.coverAssetId || seen.has(id)) return [];
+      seen.add(id);
+      return [entry];
+    });
+    return result.slice(0, 32);
+  }, [activeTab?.libraryView, activeTab?.section, libraryState, rankingState?.tiers]);
+  const coverPrewarmSignature = coverPrewarmEntries
+    .map((entry) => `${entry.id}:${entry.coverAssetId}`)
+    .join("\u0000");
+  const prewarmedCoverSignature = useRef("");
+  useEffect(() => {
+    if (!libraryState || !coverPrewarmSignature || prewarmedCoverSignature.current === coverPrewarmSignature) return;
+    prewarmedCoverSignature.current = coverPrewarmSignature;
+    void libraryBridge.prewarmEntryCovers(coverPrewarmEntries, { concurrency: 3, limit: 32 });
+  }, [coverPrewarmEntries, coverPrewarmSignature]);
+  const recapPrewarmEntries = useMemo(() => {
+    if (!libraryState) return [];
+    const entriesById = new Map(libraryState.entries.map((entry) => [entry.id, entry]));
+    const topPlacedIds = [...(rankingState?.tiers ?? [])]
+      .sort((a, b) => b.score - a.score)
+      .flatMap((tier) => tier.placedIds)
+      .slice(0, 10);
+    return topPlacedIds.flatMap((id) => {
+      const entry = entriesById.get(id);
+      return entry?.coverAssetId ? [entry] : [];
+    });
+  }, [libraryState, rankingState?.tiers]);
+  const recapPrewarmSignature = recapPrewarmEntries
+    .map((entry) => `${entry.id}:${entry.coverAssetId}`)
+    .join("\u0000");
+  const prewarmedRecapSignature = useRef("");
+  useEffect(() => {
+    if (!libraryState || !recapPrewarmSignature || prewarmedRecapSignature.current === recapPrewarmSignature) return;
+    prewarmedRecapSignature.current = recapPrewarmSignature;
+    let cancelled = false;
+    const warmRecapVariants = async () => {
+      // Warm the smaller Library assets first; Recap keeps its own native render-size variant.
+      await libraryBridge.prewarmEntryCovers(coverPrewarmEntries, { concurrency: 3, limit: 32 });
+      if (cancelled) return;
+      const queue = [...recapPrewarmEntries];
+      const worker = async () => {
+        while (queue.length && !cancelled) {
+          const entry = queue.shift();
+          if (!entry?.coverAssetId) continue;
+          await loadRecapCover(entry.id, entry.coverAssetId).catch(() => null);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker));
+      if (!cancelled) prewarmedRecapSignature.current = recapPrewarmSignature;
+    };
+    const idleWindow = window as Window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number };
+    let idleId: number | undefined;
+    const timerId = window.setTimeout(() => { void warmRecapVariants(); }, 120);
+    if (idleWindow.requestIdleCallback) {
+      window.clearTimeout(timerId);
+      idleId = idleWindow.requestIdleCallback(() => { void warmRecapVariants(); }, { timeout: 900 });
+    }
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+      if (idleId !== undefined) (idleWindow as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback?.(idleId);
+    };
+  }, [coverPrewarmEntries, libraryState, recapPrewarmEntries, recapPrewarmSignature]);
   const rankingRankIndex = buildLibraryRankIndex(
     rankingState?.library.entries ?? [],
     rankingState?.tiers.map(({ score, placedIds }) => ({ score, placedIds })) ?? null,
@@ -1048,7 +1188,7 @@ export function App() {
       return;
     }
     let cancelled = false;
-    void libraryBridge.loadEntryCover(selectedRankingEntry.id)
+    void libraryBridge.loadEntryCover(selectedRankingEntry.id, selectedRankingEntry.coverAssetId)
       .then((url) => { if (!cancelled) setRankingCoverUrl(url); })
       .catch(() => { if (!cancelled) setRankingCoverUrl(null); });
     return () => { cancelled = true; };
@@ -1073,6 +1213,7 @@ export function App() {
       </div>
     );
   const activeSection = activeTab.section;
+  const hideSidebars = activeSection === "home" || activeSection === "settings" || activeSection === "analytics" || activeSection === "recap";
   const SectionIcon =
     allSections.find((s) => s.id === activeSection)?.icon ?? HomeIcon;
   const hasFolders = activeSection === "ranking";
@@ -1115,7 +1256,7 @@ export function App() {
   );
   return (
     <div
-      className={`app-shell ${bridge.native ? "native-app" : "browser-app"}`}
+      className={`app-shell ${bridge.native ? "native-app" : "browser-app"} ${bridge.native && /Windows/i.test(navigator.userAgent) ? "windows-app" : ""}`}
     >
       <header className="titlebar" data-tauri-drag-region>
         <div className="titlebar-brand" data-tauri-drag-region>
@@ -1224,6 +1365,7 @@ export function App() {
         <div className="titlebar-spacer" data-tauri-drag-region />
         <button
           className={`icon-button panel-toggle left-sidebar-toggle ${workspace.folderOpen ? "active" : ""}`}
+          hidden={hideSidebars}
           aria-label={workspace.folderOpen ? t("app.hideLeftSidebar") : t("app.showLeftSidebar")}
           aria-pressed={workspace.folderOpen}
           onClick={() => updateWorkspace({ ...workspaceRef.current!, folderOpen: !workspaceRef.current!.folderOpen })}
@@ -1232,6 +1374,7 @@ export function App() {
         </button>
         <button
           className={`icon-button panel-toggle ${workspace.detailsOpen ? "active" : ""}`}
+          hidden={hideSidebars}
           aria-label={activeSection === "ranking"
             ? workspace.detailsOpen ? t("ranking.hideRightSidebar") : t("ranking.showRightSidebar")
             : t("app.details")}
@@ -1358,7 +1501,7 @@ export function App() {
             )}
           </aside>
         )}
-        {workspace.folderOpen && activeSection !== "ranking" && activeSection !== "library" && (
+        {workspace.folderOpen && !hideSidebars && activeSection !== "ranking" && activeSection !== "library" && (
           <aside className="folder-shell app-empty-left-sidebar" aria-label={t("app.leftSidebar")}>
             <div>
               <span>{t("app.leftSidebar")}</span>
@@ -1389,6 +1532,7 @@ export function App() {
               </button>
             </div>
           )}
+          <SupportReminder />
           <div
             className="content-scroll"
             ref={contentRef}
@@ -1523,6 +1667,34 @@ export function App() {
                 navigationRequest={rankingNavigationRequest}
                 lastCreatedEntryId={rankingCreatedEntryId}
               />
+            ) : activeSection === "analytics" ? (
+              <Analytics
+                key={activeTab.id}
+                viewKey={`${activeTab.id}:${analyticsOpenCounts.current[activeTab.id] ?? 0}`}
+                state={rankingState}
+                onMoveEntry={moveRankingEntry}
+                onEditEntry={(entryId) => {
+                  const entry = rankingState?.library.entries.find((item) => item.id === entryId);
+                  if (entry) openRankingEdit(entry);
+                }}
+                onOpenLibrary={() => navigate("library")}
+                onOpenRanking={() => navigate("ranking")}
+                confirmations={analyticsConfirmations}
+                onConfirmReview={confirmAnalyticsReview}
+                onResetReviews={resetAnalyticsReviews}
+                error={libraryLoadError}
+                onRetry={refreshRanking}
+              />
+            ) : activeSection === "recap" ? (
+              <Recap
+                state={rankingState}
+                preferences={state.preferences}
+                onPreferences={savePrefs}
+                onOpenLibrary={() => navigate("library")}
+                onOpenRanking={() => navigate("ranking")}
+                error={libraryLoadError}
+                onRetry={refreshRanking}
+              />
             ) : activeSection === "settings" ? (
               <Settings
                 preferences={state.preferences}
@@ -1582,7 +1754,7 @@ export function App() {
             )}
           </LibraryDetailsPanel>
         )}
-        {workspace.detailsOpen && activeSection !== "library" && activeSection !== "ranking" && (
+        {workspace.detailsOpen && !hideSidebars && activeSection !== "library" && activeSection !== "ranking" && (
           <aside
             className="details-shell"
             style={{ width: detailsWidth }}

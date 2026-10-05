@@ -6,6 +6,269 @@ fn default_true() -> bool {
     true
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+const DEFAULT_RECAP_DRAFTS: &str = r#"{"version":1,"drafts":[]}"#;
+const MAX_RECAP_DRAFTS_BYTES: usize = 1024 * 1024;
+const MAX_RECAP_DRAFT_COUNT: usize = 30;
+const MAX_RECAP_SLOT_COUNT: usize = 300;
+
+fn default_recap_drafts() -> String {
+    DEFAULT_RECAP_DRAFTS.into()
+}
+
+fn is_default_recap_drafts(value: &String) -> bool {
+    value == DEFAULT_RECAP_DRAFTS
+}
+
+fn bounded_json_string(value: Option<&serde_json::Value>, max_chars: usize) -> bool {
+    value.is_some_and(|value| {
+        value
+            .as_str()
+            .is_some_and(|text| !text.is_empty() && text.chars().count() <= max_chars)
+    })
+}
+
+fn nullable_json_string(value: Option<&serde_json::Value>, max_chars: usize) -> bool {
+    value.is_some_and(|value| {
+        value.is_null()
+            || value
+                .as_str()
+                .is_some_and(|text| text.chars().count() <= max_chars)
+    })
+}
+
+fn optional_nullable_json_string(value: Option<&serde_json::Value>, max_chars: usize) -> bool {
+    value.is_none() || nullable_json_string(value, max_chars)
+}
+
+fn valid_recap_filter(value: Option<&serde_json::Value>) -> bool {
+    let Some(filter) = value.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    let valid_tags = filter.get("tagIds").map_or(true, |ids| {
+        ids.as_array().is_some_and(|ids| {
+            ids.len() <= 100
+                && ids.iter().all(|id| {
+                    id.as_str()
+                        .is_some_and(|value| !value.is_empty() && value.chars().count() <= 100)
+                })
+        })
+    }) && filter
+        .get("tagMode")
+        .map_or(true, |mode| matches!(mode.as_str(), Some("any" | "all")));
+    match filter.get("kind").and_then(serde_json::Value::as_str) {
+        Some("all") => valid_tags,
+        Some("types") => {
+            filter
+                .get("typeIds")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|ids| {
+                    ids.len() <= 100
+                        && ids.iter().all(|id| {
+                            id.as_str().is_some_and(|value| {
+                                !value.is_empty() && value.chars().count() <= 100
+                            })
+                        })
+                })
+                && valid_tags
+        }
+        _ => false,
+    }
+}
+
+fn valid_recap_entry_snapshot(value: &serde_json::Value) -> bool {
+    let Some(entry) = value.as_object() else {
+        return false;
+    };
+    let valid_optional_id = |key: &str| {
+        entry.get(key).is_some_and(|value| {
+            value.is_null()
+                || value
+                    .as_str()
+                    .is_some_and(|text| !text.is_empty() && text.chars().count() <= 100)
+        })
+    };
+    let valid_asset_id = entry.get("coverAssetId").is_some_and(|value| {
+        value.is_null()
+            || value
+                .as_str()
+                .is_some_and(|id| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    });
+    bounded_json_string(entry.get("id"), 100)
+        && bounded_json_string(entry.get("title"), 500)
+        && valid_optional_id("mediaTypeId")
+        && nullable_json_string(entry.get("mediaTypeName"), 500)
+        && optional_nullable_json_string(entry.get("shortLabel"), 500)
+        && optional_nullable_json_string(entry.get("iconKey"), 100)
+        && entry.get("year").is_some_and(|year| {
+            year.is_null() || year.as_i64().is_some_and(|year| (1..=9999).contains(&year))
+        })
+        && valid_asset_id
+}
+
+fn valid_recap_predicate(value: Option<&serde_json::Value>) -> bool {
+    let Some(predicate) = value.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    match predicate.get("kind").and_then(serde_json::Value::as_str) {
+        Some("any") => true,
+        Some("year") => predicate
+            .get("value")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|year| (1..=9999).contains(&year)),
+        Some("decade") => predicate
+            .get("value")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|decade| (0..=9990).contains(&decade) && decade % 10 == 0),
+        Some("format") => bounded_json_string(predicate.get("value"), 100),
+        _ => false,
+    }
+}
+
+fn validate_recap_drafts_json(raw: &str) -> bool {
+    if raw.len() > MAX_RECAP_DRAFTS_BYTES {
+        return false;
+    }
+    let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    let Some(snapshot) = snapshot.as_object() else {
+        return false;
+    };
+    if snapshot.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return false;
+    }
+    let Some(drafts) = snapshot.get("drafts").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    if drafts.len() > MAX_RECAP_DRAFT_COUNT {
+        return false;
+    }
+
+    let mut total_slots = 0usize;
+    for draft in drafts {
+        let Some(draft) = draft.as_object() else {
+            return false;
+        };
+        let Some(slots) = draft.get("slots").and_then(serde_json::Value::as_array) else {
+            return false;
+        };
+        total_slots = match total_slots.checked_add(slots.len()) {
+            Some(count) if count <= MAX_RECAP_SLOT_COUNT => count,
+            _ => return false,
+        };
+        if !bounded_json_string(draft.get("id"), 100)
+            || draft.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+            || ![
+                "topTen",
+                "challengers",
+                "grid3x3",
+                "releaseYear",
+                "decade",
+                "format",
+                "selection",
+            ]
+            .contains(
+                &draft
+                    .get("templateId")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            )
+            || !draft
+                .get("libraryRevision")
+                .and_then(serde_json::Value::as_i64)
+                .is_some_and(|revision| revision >= 0)
+            || !valid_recap_filter(draft.get("filter"))
+            || ![
+                "dark",
+                "daylight",
+                "dusk",
+                "reading",
+                // Keep accepting v1 styles so older backups remain lossless.
+                "quiet",
+                "paper",
+                "editorial",
+            ]
+            .contains(
+                &draft
+                    .get("style")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            )
+            || !["cover", "text", "mixed"].contains(
+                &draft
+                    .get("mode")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            )
+            || !["portrait", "landscape"].contains(
+                &draft
+                    .get("orientation")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            )
+            || !draft
+                .get("showTitles")
+                .is_some_and(serde_json::Value::is_boolean)
+            || !draft
+                .get("watermark")
+                .is_some_and(serde_json::Value::is_boolean)
+            || draft
+                .get("showMediaTypes")
+                .is_some_and(|show| !show.is_boolean())
+            || !nullable_json_string(draft.get("heading"), 1000)
+            || !nullable_json_string(draft.get("caption"), 1000)
+            || !draft
+                .get("rankingLabel")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|label| ["canonical", "mySelection"].contains(&label))
+            || !bounded_json_string(draft.get("createdAt"), 100)
+            || !bounded_json_string(draft.get("updatedAt"), 100)
+            || draft
+                .get("sourceFingerprint")
+                .is_some_and(|fingerprint| !bounded_json_string(Some(fingerprint), 100))
+        {
+            return false;
+        }
+        for slot in slots {
+            let Some(slot) = slot.as_object() else {
+                return false;
+            };
+            let valid_page = slot
+                .get("page")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|page| page <= 1000);
+            let valid_rank = slot.get("rank").is_some_and(|rank| {
+                rank.is_null()
+                    || rank
+                        .as_u64()
+                        .is_some_and(|rank| rank > 0 && rank <= 1_000_000)
+            });
+            let valid_entry = slot
+                .get("entry")
+                .is_some_and(|entry| entry.is_null() || valid_recap_entry_snapshot(entry));
+            let valid_population_count = slot.get("populationCount").map_or(true, |count| {
+                count.as_u64().is_some_and(|count| count <= 1_000_000)
+            });
+            if !bounded_json_string(slot.get("id"), 100)
+                || !valid_page
+                || !valid_rank
+                || !valid_entry
+                || !valid_population_count
+                || !valid_recap_predicate(slot.get("predicate"))
+                || !nullable_json_string(slot.get("label"), 500)
+                || !nullable_json_string(slot.get("titleOverride"), 500)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
@@ -48,6 +311,15 @@ pub struct Preferences {
     pub next_tab_shortcut: String,
     pub radar_mode: String,
     pub visible_criteria: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analytics_boundary_reviews: Vec<String>,
+    #[serde(
+        default = "default_recap_drafts",
+        skip_serializing_if = "is_default_recap_drafts"
+    )]
+    pub recap_drafts: String,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub recap_watermark: bool,
 }
 
 impl Default for Preferences {
@@ -65,6 +337,9 @@ impl Default for Preferences {
             next_tab_shortcut: "Alt+ArrowRight".into(),
             radar_mode: "explicit".into(),
             visible_criteria: Vec::new(),
+            analytics_boundary_reviews: Vec::new(),
+            recap_drafts: default_recap_drafts(),
+            recap_watermark: true,
         }
     }
 }
@@ -266,6 +541,12 @@ pub struct Entry {
     pub cover_asset_id: Option<String>,
     pub release_date: Option<ReleaseDate>,
     pub review_text: String,
+    /// Provider-native identifiers are namespaced and travel with library exports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_identities: Vec<ExternalIdentity>,
+    /// Optional remote image reference. No third-party artwork bytes are embedded in backups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_cover: Option<RemoteCoverReference>,
     // Read and re-emit old portable archives faithfully for checksum validation.
     // This field is never written by current exports and is discarded on import.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "notesText")]
@@ -295,6 +576,16 @@ pub struct EntryInput {
     pub overall_rating: Option<i32>,
     #[serde(default)]
     pub cover_asset_id: Option<String>,
+    /// `None` means leave existing identities unchanged; explicit `Some(vec![])` clears them.
+    #[serde(default)]
+    pub external_identities: Option<Vec<ExternalIdentity>>,
+    /// `Some` replaces an existing reference; omission preserves it. Clearing is an explicit
+    /// draft flag so a cancelled editor never mutates the saved work.
+    #[serde(default)]
+    pub remote_cover: Option<RemoteCoverReference>,
+    /// Explicitly clears an existing catalog cover in the same entry save transaction.
+    #[serde(default)]
+    pub clear_remote_cover: bool,
     pub release_date: Option<ReleaseDate>,
     #[serde(default)]
     pub review_text: String,
@@ -303,6 +594,91 @@ pub struct EntryInput {
     pub criterion_ratings: BTreeMap<String, Option<i32>>,
     #[serde(default)]
     pub tag_ids: Vec<String>,
+}
+
+/// A single atomic library edit applied to a selected set of entries.
+/// `media_type_id` and `disposition` are optional patches; `trash` moves the
+/// whole selection to the trash and cannot be combined with edits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchEntryUpdateInput {
+    pub expected_revision: i64,
+    #[serde(alias = "selectedIds")]
+    pub entry_ids: Vec<String>,
+    pub media_type_id: Option<String>,
+    pub disposition: Option<String>,
+    #[serde(default)]
+    pub remove_covers: bool,
+    #[serde(default)]
+    pub trash: bool,
+}
+
+pub fn validate_batch_entry_update(input: &BatchEntryUpdateInput) -> Result<(), ValidationError> {
+    if input.expected_revision < 0 {
+        return Err(ValidationError::Invalid(
+            "Library revision is invalid".into(),
+        ));
+    }
+    if input.entry_ids.is_empty() || input.entry_ids.len() > 20_000 {
+        return Err(ValidationError::Invalid(
+            "Select between 1 and 20,000 library items".into(),
+        ));
+    }
+    let mut ids = HashSet::with_capacity(input.entry_ids.len());
+    if input
+        .entry_ids
+        .iter()
+        .any(|id| id.trim().is_empty() || id.chars().count() > 100 || !ids.insert(id.as_str()))
+    {
+        return Err(ValidationError::Invalid(
+            "The selected library item IDs are invalid".into(),
+        ));
+    }
+    if input
+        .media_type_id
+        .as_ref()
+        .is_some_and(|id| id.trim().is_empty() || id.chars().count() > 100)
+    {
+        return Err(ValidationError::Invalid("Choose a valid media type".into()));
+    }
+    if input
+        .disposition
+        .as_deref()
+        .is_some_and(|value| !["experienced", "planned", "dropped"].contains(&value))
+    {
+        return Err(ValidationError::Invalid("Unsupported disposition".into()));
+    }
+    let has_edits =
+        input.media_type_id.is_some() || input.disposition.is_some() || input.remove_covers;
+    if input.trash && has_edits {
+        return Err(ValidationError::Invalid(
+            "Choose either edits or trash for a batch operation".into(),
+        ));
+    }
+    if !input.trash && !has_edits {
+        return Err(ValidationError::Invalid(
+            "Choose at least one batch change".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExternalIdentity {
+    pub provider: String,
+    pub entity_kind: String,
+    pub external_id: String,
+    pub source_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteCoverReference {
+    pub provider: String,
+    pub url: String,
+    pub source_url: Option<String>,
+    pub attribution: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -481,6 +857,17 @@ pub fn validate_entry(input: &EntryInput) -> Result<(), ValidationError> {
     if let Some(date) = &input.release_date {
         validate_release_date(date)?;
     }
+    if let Some(identities) = &input.external_identities {
+        validate_external_identities(identities)?;
+    }
+    if let Some(cover) = &input.remote_cover {
+        validate_remote_cover(cover)?;
+    }
+    if input.clear_remote_cover && input.remote_cover.is_some() {
+        return Err(ValidationError::Invalid(
+            "Choose a remote cover or clear it, not both".into(),
+        ));
+    }
     if input.criterion_ratings.len() > 1000
         || input.criterion_ratings.iter().any(|(id, score)| {
             id.trim().is_empty()
@@ -504,6 +891,102 @@ pub fn validate_entry(input: &EntryInput) -> Result<(), ValidationError> {
         ));
     }
     Ok(())
+}
+
+pub fn validate_external_identities(
+    identities: &[ExternalIdentity],
+) -> Result<(), ValidationError> {
+    if identities.len() > 100 {
+        return Err(ValidationError::Invalid(
+            "Too many external media IDs".into(),
+        ));
+    }
+    let mut unique = HashSet::new();
+    for identity in identities {
+        let provider = identity.provider.trim();
+        let entity_kind = identity.entity_kind.trim();
+        let external_id = identity.external_id.trim();
+        if provider.is_empty()
+            || provider.len() > 50
+            || !provider.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+            })
+            || entity_kind.is_empty()
+            || entity_kind.chars().count() > 64
+            || entity_kind.chars().any(char::is_control)
+            || external_id.is_empty()
+            || external_id.chars().count() > 256
+            || external_id.chars().any(char::is_control)
+            || !unique.insert((
+                provider.to_string(),
+                entity_kind.to_string(),
+                external_id.to_string(),
+            ))
+            || identity
+                .source_url
+                .as_ref()
+                .is_some_and(|url| !valid_https_url(url, 2048))
+        {
+            return Err(ValidationError::Invalid(
+                "External media IDs must have unique, valid provider identities".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_remote_cover(cover: &RemoteCoverReference) -> Result<(), ValidationError> {
+    let hosts: &[&str] = match cover.provider.as_str() {
+        "tmdb" => &["image.tmdb.org"],
+        "openlibrary" => &["covers.openlibrary.org"],
+        "googlebooks" => &["books.google.com", "books.googleusercontent.com"],
+        "igdb" => &["images.igdb.com"],
+        "steam" => &[
+            "shared.akamai.steamstatic.com",
+            "cdn.akamai.steamstatic.com",
+        ],
+        _ => &[],
+    };
+    if hosts.is_empty()
+        || !valid_https_url_for_hosts(&cover.url, 4096, hosts)
+        || cover
+            .source_url
+            .as_ref()
+            .is_some_and(|url| !valid_https_url(url, 2048))
+        || cover.attribution.as_ref().is_some_and(|value| {
+            value.chars().count() > 1000 || value.chars().any(char::is_control)
+        })
+    {
+        return Err(ValidationError::Invalid(
+            "Remote cover reference is unsupported or unsafe".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_https_url(value: &str, max_len: usize) -> bool {
+    valid_https_url_for_hosts(value, max_len, &[])
+}
+
+fn valid_https_url_for_hosts(value: &str, max_len: usize, allowed_hosts: &[&str]) -> bool {
+    if value.chars().count() > max_len || value.chars().any(char::is_control) {
+        return false;
+    }
+    let Some(authority_and_path) = value.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = authority_and_path
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') || authority.contains(':') {
+        return false;
+    }
+    let host = authority.to_ascii_lowercase();
+    if allowed_hosts.is_empty() {
+        return host.contains('.') && !host.starts_with('.') && !host.ends_with('.');
+    }
+    allowed_hosts.iter().any(|allowed| host == *allowed)
 }
 
 pub fn validate_media_type(input: &MediaTypeInput) -> Result<(), ValidationError> {
@@ -629,6 +1112,11 @@ pub fn validate_preferences(p: &Preferences) -> Result<(), ValidationError> {
         || p.visible_criteria
             .iter()
             .any(|id| id.is_empty() || id.chars().count() > 100)
+        || p.analytics_boundary_reviews.len() > 1000
+        || p.analytics_boundary_reviews
+            .iter()
+            .any(|fingerprint| fingerprint.is_empty() || fingerprint.chars().count() > 500)
+        || !validate_recap_drafts_json(&p.recap_drafts)
         || p.previous_tab_shortcut.is_empty()
         || p.next_tab_shortcut.is_empty()
         || p.previous_tab_shortcut == p.next_tab_shortcut
@@ -734,6 +1222,9 @@ mod tests {
         .unwrap();
         assert!(preferences.scenes_enabled);
         assert!(preferences.remember_sidebars_per_tab);
+        assert!(preferences.analytics_boundary_reviews.is_empty());
+        assert_eq!(preferences.recap_drafts, DEFAULT_RECAP_DRAFTS);
+        assert!(preferences.recap_watermark);
 
         let tab: WorkspaceTab = serde_json::from_value(serde_json::json!({
             "id": "legacy-tab",
@@ -744,6 +1235,174 @@ mod tests {
         .unwrap();
         assert_eq!(tab.folder_open, None);
         assert_eq!(tab.details_open, None);
+    }
+
+    fn recap_draft_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "id": "draft-1",
+            "version": 1,
+            "templateId": "topTen",
+            "libraryRevision": 12,
+            "filter": { "kind": "all" },
+            "style": "quiet",
+            "mode": "cover",
+            "orientation": "portrait",
+            "showTitles": true,
+            "watermark": true,
+            "heading": "My top ten",
+            "caption": "",
+            "rankingLabel": "canonical",
+            "sourceFingerprint": "v1-0123456789abcdef",
+            "slots": [{
+                "id": "slot-1",
+                "page": 0,
+                "entry": {
+                    "id": "entry-1",
+                    "title": "A story",
+                    "mediaTypeId": "film",
+                    "mediaTypeName": "Films",
+                    "year": 2024,
+                    "coverAssetId": "a".repeat(64)
+                },
+                "rank": 1,
+                "label": null,
+                "populationCount": 5,
+                "titleOverride": null,
+                "predicate": { "kind": "any" }
+            }],
+            "createdAt": "2026-10-03T00:00:00.000Z",
+            "updatedAt": "2026-10-03T00:00:00.000Z"
+        })
+    }
+
+    #[test]
+    fn recap_draft_preferences_validate_versioned_bounded_snapshots() {
+        let mut preferences = Preferences::default();
+        let valid = serde_json::json!({
+            "version": 1,
+            "drafts": [recap_draft_fixture()]
+        });
+        preferences.recap_drafts = serde_json::to_string(&valid).unwrap();
+        assert!(validate_preferences(&preferences).is_ok());
+
+        let mut current = recap_draft_fixture();
+        current["style"] = serde_json::json!("daylight");
+        current["mode"] = serde_json::json!("text");
+        current["showMediaTypes"] = serde_json::json!(false);
+        current["slots"][0]["entry"]["shortLabel"] = serde_json::json!("A story");
+        current["slots"][0]["entry"]["iconKey"] = serde_json::json!("book-open");
+        preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "drafts": [current]
+        }))
+        .unwrap();
+        assert!(validate_preferences(&preferences).is_ok());
+
+        let mut invalid_population_count = recap_draft_fixture();
+        invalid_population_count["slots"][0]["populationCount"] = serde_json::json!(-1);
+        preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "drafts": [invalid_population_count]
+        }))
+        .unwrap();
+        assert!(validate_preferences(&preferences).is_err());
+
+        for filter in [
+            serde_json::json!({ "kind": "all", "tagIds": ["tag-a", "tag-b"], "tagMode": "any" }),
+            serde_json::json!({ "kind": "types", "typeIds": ["film"], "tagIds": ["tag-a", "tag-b"], "tagMode": "all" }),
+            serde_json::json!({ "kind": "all", "tagIds": [] }),
+            serde_json::json!({ "kind": "types", "typeIds": ["film"] }),
+        ] {
+            let mut tagged = recap_draft_fixture();
+            tagged["filter"] = filter;
+            preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+                "version": 1,
+                "drafts": [tagged]
+            }))
+            .unwrap();
+            assert!(validate_preferences(&preferences).is_ok());
+        }
+
+        for filter in [
+            serde_json::json!({ "kind": "all", "tagIds": ["tag-a"], "tagMode": "or" }),
+            serde_json::json!({ "kind": "all", "tagIds": [""] }),
+            serde_json::json!({ "kind": "all", "tagIds": ["x".repeat(101)] }),
+            serde_json::json!({ "kind": "all", "tagIds": vec!["tag"; 101] }),
+            serde_json::json!({ "kind": "types", "typeIds": ["film"], "tagIds": "tag-a" }),
+        ] {
+            let mut tagged = recap_draft_fixture();
+            tagged["filter"] = filter;
+            preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+                "version": 1,
+                "drafts": [tagged]
+            }))
+            .unwrap();
+            assert!(validate_preferences(&preferences).is_err());
+        }
+
+        let mut malformed_optional = recap_draft_fixture();
+        malformed_optional["showMediaTypes"] = serde_json::json!("yes");
+        preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "drafts": [malformed_optional]
+        }))
+        .unwrap();
+        assert!(validate_preferences(&preferences).is_err());
+
+        let mut oversized_label = recap_draft_fixture();
+        oversized_label["slots"][0]["entry"]["shortLabel"] = serde_json::json!("x".repeat(501));
+        preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "drafts": [oversized_label]
+        }))
+        .unwrap();
+        assert!(validate_preferences(&preferences).is_err());
+
+        let mut legacy = recap_draft_fixture();
+        legacy.as_object_mut().unwrap().remove("sourceFingerprint");
+        preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "drafts": [legacy]
+        }))
+        .unwrap();
+        assert!(validate_preferences(&preferences).is_ok());
+
+        let mut oversized_fingerprint = recap_draft_fixture();
+        oversized_fingerprint["sourceFingerprint"] = serde_json::json!("x".repeat(101));
+        preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "drafts": [oversized_fingerprint]
+        }))
+        .unwrap();
+        assert!(validate_preferences(&preferences).is_err());
+
+        for invalid in [
+            serde_json::json!({ "version": 2, "drafts": [] }),
+            serde_json::json!({ "version": 1, "drafts": [serde_json::json!({})] }),
+            serde_json::json!({ "version": 1, "drafts": vec![recap_draft_fixture(); MAX_RECAP_DRAFT_COUNT + 1] }),
+        ] {
+            preferences.recap_drafts = serde_json::to_string(&invalid).unwrap();
+            assert!(validate_preferences(&preferences).is_err());
+        }
+
+        let mut too_many_slots = recap_draft_fixture();
+        too_many_slots["slots"] = serde_json::json!(vec![
+            too_many_slots["slots"][0].clone();
+            MAX_RECAP_SLOT_COUNT + 1
+        ]);
+        preferences.recap_drafts = serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "drafts": [too_many_slots]
+        }))
+        .unwrap();
+        assert!(validate_preferences(&preferences).is_err());
+
+        preferences.recap_drafts = format!(
+            "{}{}",
+            DEFAULT_RECAP_DRAFTS,
+            " ".repeat(MAX_RECAP_DRAFTS_BYTES)
+        );
+        assert!(validate_preferences(&preferences).is_err());
     }
 
     #[test]
@@ -831,6 +1490,9 @@ mod tests {
             media_type_id: None,
             overall_rating: Some(8),
             cover_asset_id: None,
+            external_identities: None,
+            remote_cover: None,
+            clear_remote_cover: false,
             release_date: None,
             review_text: String::new(),
             short_label: None,
@@ -889,6 +1551,9 @@ mod tests {
             media_type_id: Some("literature".into()),
             overall_rating: Some(8),
             cover_asset_id: None,
+            external_identities: None,
+            remote_cover: None,
+            clear_remote_cover: false,
             release_date: Some(ReleaseDate {
                 year: 2024,
                 month: Some(2),

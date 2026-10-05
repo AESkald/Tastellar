@@ -1,0 +1,9 @@
+Book Id,Title,Author,Author l-f,Additional Authors,ISBN,ISBN13,My Rating,Publisher,Binding,Number of Pages,Year Published,Original Publication Year,Date Read,Date Added,Bookshelves,Bookshelves with positions,Exclusive Shelf,My Review,Spoiler,Private Notes,Read Count,Owned Copies
+99001001,The Glass Harbour,A. Example,"Example, A.",,"=""9900000006""","=""9789900000006""",5,Example Press,Paperback,320,2019,2019,,2026/10/03,fixture,fixture,read,,,,1,0
+99001002,The Obsidian Almanac,B. Example,"Example, B.",,"=""9900000018""","=""9789900000013""",4,Example Press,Paperback,320,2007,2006,,2026/10/03,fixture,fixture,read,,,,1,0
+99001003,Twelve Quiet Rooms,C. Example,"Example, C.",,"=""990000002X""","=""9789900000020""",5,Example Press,Paperback,320,2014,2014,,2026/10/03,fixture,fixture,read,,,,1,0
+99001004,"夜の庭 (Garden of Night, #1)",D. Example,"Example, D.",,"=""9900000031""","=""9789900000037""",5,Example Press,Paperback,320,2020,2020,,2026/10/03,fixture,fixture,read,,,,1,0
+99001005,A Map of Salt,E. Example,"Example, E.",,"=""9900000043""","=""9789900000044""",4,Example Press,Paperback,320,2018,2018,,2026/10/03,fixture,fixture,read,,,,1,0
+99001006,The Distant Orchard,F. Example,"Example, F.",,"=""9900000055""","=""9789900000051""",5,Example Press,Paperback,320,2021,2021,,2026/10/03,fixture,fixture,read,,,,1,0
+99001007,A Season of Lanterns,G. Example,"Example, G.",,"=""malformed","=""""",4,Example Press,Paperback,320,2022,2022,,2026/10/03,fixture,fixture,read,,,,1,0
+99001008,"The Future Orchard, Book 1",H. Example,"Example, H.",,"=""9900000079""","=""9789900000075""",0,Example Press,Paperback,320,2027,2027,,2026/10/03,fixture,fixture,to-read,,,,0,0

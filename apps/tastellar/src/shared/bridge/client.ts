@@ -68,8 +68,12 @@ export function savePreferences(
   expectedVersion: number,
   preferences: Preferences,
 ) {
-  return mutation("save_preferences", { expectedVersion, preferences }, () => {
-    previewState.preferences = structuredClone(preferences);
+  const normalized = {
+    ...initialState().preferences,
+    ...structuredClone(preferences),
+  };
+  return mutation("save_preferences", { expectedVersion, preferences: normalized }, () => {
+    previewState.preferences = structuredClone(normalized);
   });
 }
 export function saveWorkspace(expectedVersion: number, workspace: Workspace) {

@@ -331,7 +331,7 @@
 .ranking-duel-card:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); box-shadow: 0 12px 28px #00000020; }
 .ranking-duel-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-color: var(--accent-border); }
 .ranking-duel-card:active:not(:disabled) { transform: translateY(0) scale(.992); box-shadow: 0 4px 12px #00000012; transition-duration: .12s; }
-.ranking-duel-art { position: relative; width: min(190px, 100%); aspect-ratio: .76; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; justify-content: center; gap: 10px; overflow: hidden; color: var(--accent); border: 1px solid var(--border-soft); border-radius: 9px; background: linear-gradient(150deg, var(--cover-placeholder-start), var(--cover-placeholder-end)); box-shadow: 0 5px 16px #00000020; }
+.ranking-duel-art { position: relative; width: min(190px, 100%); aspect-ratio: 2 / 3; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; justify-content: center; gap: 10px; overflow: hidden; color: var(--accent); border: 1px solid var(--border-soft); border-radius: 9px; background: linear-gradient(150deg, var(--cover-placeholder-start), var(--cover-placeholder-end)); box-shadow: 0 5px 16px #00000020; }
 .ranking-duel-art.has-cover { background: var(--surface); }
 .ranking-duel-art > img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .ranking-duel-art.no-cover > svg { color: color-mix(in srgb, var(--accent) 65%, var(--muted)); }
@@ -361,10 +361,22 @@
 .ranking-preview-candidate { color: var(--accent); border: 1px solid var(--accent-border); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
 .ranking-preview-neighbor { color: var(--muted); }
 
-.ranking-help-body { padding: 0 17px 17px; color: var(--muted); font-size: .78rem; line-height: 1.6; }
-.ranking-help-body p { margin: 0 0 10px; }
-.ranking-help-body ul { margin: 0; padding-left: 18px; }
+.ranking-help-modal .modal-header { gap: 12px; padding: 20px 24px 16px; }
+.ranking-help-modal .modal-header > div { min-width: 0; }
+.ranking-help-modal .modal-header h2 { margin: 0; line-height: 1.2; }
+.ranking-help-modal .modal-header p { margin-top: 5px; line-height: 1.5; }
+.ranking-help-modal .modal-header .icon-button { width: 32px; height: 32px; margin: 0; }
+.ranking-help-body { min-height: 0; overflow-y: auto; padding: 16px 24px 10px; color: var(--muted); font-size: .78rem; line-height: 1.5; }
+.ranking-help-body p { margin: 0 0 8px; }
+.ranking-help-body ul { margin: 0; padding-left: 20px; }
 .ranking-help-body li { padding: 3px 0; }
+.ranking-help-modal .ranking-help-actions { padding: 12px 24px; }
+.ranking-help-actions .button { min-width: 72px; min-height: 36px; }
+@media (max-width: 520px) {
+  .ranking-help-modal .modal-header { padding: 18px 18px 14px; }
+  .ranking-help-body { padding: 15px 18px 8px; }
+  .ranking-help-modal .ranking-help-actions { padding: 11px 18px; }
+}
 .ranking-create-form { display: flex; flex-direction: column; gap: 12px; padding: 0 17px 17px; }
 .ranking-create-form label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: .72rem; }
 .ranking-create-form input,

@@ -1,25 +1,25 @@
-# Tastellar 0.4 — macOS app
+# Tastellar 1.0 — desktop app
 
-A local personal media library with rating, score-tier rankings and duel-based ordering. Version 0.4 includes the profile, taste priorities, recommendation prompt, Library, Ranking, portable archives, workspace tabs and settings.
+A local personal media library with rating, score-tier rankings and duel-based ordering. Version 1.0 includes the profile, taste priorities, recommendation prompt, Library, Ranking, portable archives, workspace tabs and settings.
 
-## Run the macOS app
+## Run the desktop app
 
-Prerequisites: Node.js, npm, Rust stable, and Xcode command-line tools. A project-local Rust toolchain is used automatically when present under `.tools`; no global installation is required in this workspace.
+Prerequisites: Node.js, npm, Rust stable, and the native build tools for your operating system. macOS requires Xcode Command Line Tools; Windows requires Microsoft C++ Build Tools with the “Desktop development with C++” workload and the Rust MSVC toolchain. See the [desktop build guide](docs/desktop-builds.md) for platform setup and installer commands. A project-local Rust toolchain is used automatically when present under `.tools`.
 
 ```sh
 npm install
 npm run desktop
 ```
 
-The development launcher stores data in `.runtime/development` inside this project. It uses SQLite, not browser storage. The normal packaged application uses macOS Application Support unless `TASTELLAR_DATA_DIR` is explicitly set.
+The development launcher stores data in `.runtime/development` inside this project. It uses SQLite, not browser storage. The packaged app stores data in the operating system’s application data directory unless `TASTELLAR_DATA_DIR` is explicitly set.
 
-Build a local macOS app:
+Build a macOS app and DMG installer:
 
 ```sh
-npm run desktop:build
+npm run desktop:build:macos
 ```
 
-Output: `.target/release/bundle/macos/Tastellar.app`. This development build is not notarized for public distribution.
+For the Windows setup executable and signing guidance, see the [desktop build guide](docs/desktop-builds.md). Local builds are for development and are not notarized for public distribution.
 
 ## Browser preview
 
@@ -27,7 +27,7 @@ Output: `.target/release/bundle/macos/Tastellar.app`. This development build is 
 npm run dev
 ```
 
-Open `http://127.0.0.1:1420`. The preview is clearly labeled and keeps changes in memory only; refreshing clears them. Native persistence, avatar validation and backup dialogs must be tested in the macOS app. No browser local storage is used.
+Open `http://127.0.0.1:1420`. The preview is clearly labeled and keeps changes in memory only; refreshing clears them. Native persistence, avatar validation and backup dialogs must be tested in the desktop app. No browser local storage is used.
 
 ## Available now
 
@@ -39,7 +39,7 @@ Open `http://127.0.0.1:1420`. The preview is clearly labeled and keeps changes i
 - System, Daylight, Midnight, Dusk and Forest themes, text sizing, reduced motion, startup and restore-tab settings.
 - Portable `.tastellar.json` archives for profile and workspace data, stories, ratings, media types, criteria, tags, history, trash, and original covers/avatar; validation and an automatic recovery archive before restore.
 
-There are no sample works or invented stats. Other platforms, media editors, merge import, import preview, and graphics scenes are not implemented in this slice. Archive size limits and the current JSON format are documented in [data durability](projectstructure/architecture/12-data-safety.md).
+There are no sample works or invented stats. Mobile targets, media editors, merge import, and graphics scenes are not implemented in this slice. Archive size limits and the current JSON format are documented in [data durability](projectstructure/architecture/12-data-safety.md).
 
 ## Tests
 
@@ -65,6 +65,6 @@ Use ordinary `cargo test` with the same package flags if Rust is installed globa
 
 ## Structure
 
-`apps/tastellar/src`: React/TypeScript UI, contextual English messages and Home/Library features. `apps/tastellar/src-tauri`: native macOS host and narrow commands. `crates/domain`: validation and data contracts. `crates/storage`: SQLite transactions, managed images and portable Home/Library archives. `projectstructure`: product architecture, feature specifications and current implementation notes.
+`apps/tastellar/src`: React/TypeScript UI, contextual English messages and Home/Library features. `apps/tastellar/src-tauri`: native Tauri host and narrow commands. `crates/domain`: validation and data contracts. `crates/storage`: SQLite transactions, managed images and portable Home/Library archives. `projectstructure`: product architecture, feature specifications and current implementation notes.
 
 Start with [the specification index](projectstructure/README.md) or [the Home foundation notes](projectstructure/delivery/18-home-foundation.md).

@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   CriterionDraft,
+  Entry,
   EntryDraft,
   LibraryState,
   MediaTypeDraft,
@@ -133,6 +134,122 @@ function createPreviewState(revision: number): LibraryState {
 }
 
 const PREVIEW_LIBRARY_KEY = "tastellar.preview.library.v1";
+const MAX_COVER_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
+const COVER_PREWARM_MAX_ENTRIES = 32;
+const COVER_PREWARM_CONCURRENCY = 3;
+const loadedEntryCovers = new Map<string, { source: string; bytes: number }>();
+const entryCoverRequests = new Map<string, Promise<string | null>>();
+const entryCoverAssetByEntry = new Map<string, string>();
+let loadedEntryCoverBytes = 0;
+let entryCoverCacheGeneration = 0;
+
+function rememberEntryCover(key: string, source: string) {
+  const previous = loadedEntryCovers.get(key);
+  if (previous) loadedEntryCoverBytes -= previous.bytes;
+  const item = { source, bytes: source.length * 2 };
+  if (item.bytes > MAX_COVER_SOURCE_CACHE_BYTES) {
+    loadedEntryCovers.delete(key);
+    for (const [entryId, assetId] of entryCoverAssetByEntry) {
+      if (`library:${assetId}` === key) entryCoverAssetByEntry.delete(entryId);
+    }
+    return;
+  }
+  loadedEntryCovers.delete(key);
+  loadedEntryCovers.set(key, item);
+  loadedEntryCoverBytes += item.bytes;
+  while (loadedEntryCoverBytes > MAX_COVER_SOURCE_CACHE_BYTES && loadedEntryCovers.size > 1) {
+    const oldestKey = loadedEntryCovers.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = loadedEntryCovers.get(oldestKey);
+    if (oldest) loadedEntryCoverBytes -= oldest.bytes;
+    loadedEntryCovers.delete(oldestKey);
+    for (const [entryId, assetId] of entryCoverAssetByEntry) {
+      if (`library:${assetId}` === oldestKey) entryCoverAssetByEntry.delete(entryId);
+    }
+  }
+}
+
+function deleteCachedEntryCover(entryId: string) {
+  entryCoverAssetByEntry.delete(entryId);
+  const key = `entry:${entryId}`;
+  const item = loadedEntryCovers.get(key);
+  if (item) loadedEntryCoverBytes -= item.bytes;
+  loadedEntryCovers.delete(key);
+  entryCoverRequests.delete(key);
+}
+
+export function peekEntryCover(entryId: string, assetId?: string | null): string | null {
+  const resolvedAssetId = assetId || entryCoverAssetByEntry.get(entryId);
+  return peekCoverSource(resolvedAssetId ? `library:${resolvedAssetId}` : `entry:${entryId}`);
+}
+
+export function peekCoverSource(cacheKey: string): string | null {
+  const item = loadedEntryCovers.get(cacheKey);
+  if (!item) return null;
+  loadedEntryCovers.delete(cacheKey);
+  loadedEntryCovers.set(cacheKey, item);
+  return item.source;
+}
+
+export function loadCachedCoverSource(
+  cacheKey: string,
+  load: () => Promise<string | null>,
+): Promise<string | null> {
+  const cached = peekCoverSource(cacheKey);
+  if (cached !== null) return Promise.resolve(cached);
+  const existing = entryCoverRequests.get(cacheKey);
+  if (existing) return existing;
+  const generation = entryCoverCacheGeneration;
+  let request: Promise<string | null>;
+  request = load()
+    .then((source) => {
+      if (source && generation === entryCoverCacheGeneration && entryCoverRequests.get(cacheKey) === request) {
+        rememberEntryCover(cacheKey, source);
+      }
+      return source;
+    })
+    .finally(() => {
+      if (entryCoverRequests.get(cacheKey) === request) entryCoverRequests.delete(cacheKey);
+    });
+  entryCoverRequests.set(cacheKey, request);
+  return request;
+}
+
+export function clearEntryCoverCache() {
+  entryCoverCacheGeneration += 1;
+  loadedEntryCovers.clear();
+  entryCoverRequests.clear();
+  entryCoverAssetByEntry.clear();
+  loadedEntryCoverBytes = 0;
+}
+
+export async function prewarmEntryCovers(
+  entries: readonly Pick<Entry, "id" | "coverAssetId">[],
+  options: { concurrency?: number; limit?: number } = {},
+): Promise<void> {
+  const candidates = entries
+    .filter((entry) => entry.coverAssetId)
+    .slice(0, Math.max(0, options.limit ?? COVER_PREWARM_MAX_ENTRIES));
+  const queue = [...candidates];
+  const concurrency = Math.max(1, Math.min(6, options.concurrency ?? COVER_PREWARM_CONCURRENCY, queue.length || 1));
+  const worker = async () => {
+    while (queue.length) {
+      const entry = queue.shift();
+      if (!entry?.coverAssetId) return;
+      const source = await loadEntryCover(entry.id, entry.coverAssetId).catch(() => null);
+      if (!source || typeof Image === "undefined") continue;
+      try {
+        const image = new Image();
+        image.decoding = "async";
+        image.src = source;
+        if (typeof image.decode === "function") await image.decode();
+      } catch {
+        // Decode warm-up is best effort; the source string remains cached.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, worker));
+}
 
 function readPreviewLibrary(): LibraryState {
   try {
@@ -172,6 +289,7 @@ const previewCovers = new Map<string, string>();
 export function resetPreview(revision: number) {
   preview = createPreviewState(revision);
   previewCovers.clear();
+  clearEntryCoverCache();
   persistPreviewLibrary();
 }
 
@@ -217,6 +335,8 @@ export function saveEntry(expectedRevision: number, entry: EntryDraft) {
       }
       const next = {
         ...clone(entry),
+        externalIdentities: entry.externalIdentities ?? previous?.externalIdentities ?? [],
+        remoteCover: entry.clearRemoteCover ? null : entry.remoteCover ?? previous?.remoteCover ?? null,
         criterionRatings,
         importOrder:
           previous?.importOrder ??
@@ -478,15 +598,50 @@ export function saveEntryCover(
           : entry,
       );
     },
-  );
+  ).then((saved) => {
+    const source = `data:${mimeType};base64,${base64}`;
+    previewCovers.set(entryId, source);
+    const assetId = saved.entries.find((entry) => entry.id === entryId)?.coverAssetId ?? undefined;
+    deleteCachedEntryCover(entryId);
+    if (assetId) {
+      rememberEntryCover(`library:${assetId}`, source);
+      entryCoverAssetByEntry.set(entryId, assetId);
+    } else {
+      rememberEntryCover(`entry:${entryId}`, source);
+    }
+    return saved;
+  });
 }
 
-export function loadEntryCover(entryId: string): Promise<string | null> {
-  return native
+export function loadEntryCover(entryId: string, assetId?: string | null): Promise<string | null> {
+  const resolvedAssetId = assetId || entryCoverAssetByEntry.get(entryId);
+  const key = resolvedAssetId ? `library:${resolvedAssetId}` : `entry:${entryId}`;
+  const cached = peekEntryCover(entryId, assetId);
+  if (cached !== null) return Promise.resolve(cached);
+  return loadCachedCoverSource(key, () => native
     ? invoke<string | null>("load_entry_cover", { entryId })
-    : Promise.resolve(previewCovers.get(entryId) ?? null);
+    : Promise.resolve(previewCovers.get(entryId) ?? null))
+    .then((source) => {
+      if (source && assetId) entryCoverAssetByEntry.set(entryId, assetId);
+      return source;
+    });
 }
 
 export function errorMessage(error: unknown): string {
   return localizedErrorMessage(error, "error.libraryFallback");
+}
+
+export function batchUpdateEntries(input: { expectedRevision: number; entryIds: string[]; mediaTypeId?: string; disposition?: Entry["disposition"]; removeCovers?: boolean; trash?: boolean }): Promise<LibraryState> {
+  return change("batch_update_entries", { input }, input.expectedRevision, () => {
+    const ids = new Set(input.entryIds);
+    if (input.trash) preview.entries = preview.entries.filter((entry) => !ids.has(entry.id));
+    else preview.entries = preview.entries.map((entry) => {
+      if (!ids.has(entry.id)) return entry;
+      const disposition = input.disposition ?? entry.disposition;
+      return { ...entry, disposition, mediaTypeId: input.mediaTypeId ?? entry.mediaTypeId,
+        overallRating: disposition === "experienced" ? entry.overallRating : null,
+        ...(input.removeCovers ? { coverAssetId: null, remoteCover: null } : {}),
+        version: entry.version + 1, updatedAt: new Date().toISOString() };
+    });
+  });
 }

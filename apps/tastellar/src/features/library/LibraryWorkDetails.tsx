@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   CalendarDays,
   CircleHelp,
@@ -63,6 +64,8 @@ export function LibraryWorkDetails({
         entry.criterionRatings[criterion.id],
     )
     .sort((a, b) => a.sortOrder - b.sortOrder);
+  const [coverFailed, setCoverFailed] = useState(false);
+  useEffect(() => setCoverFailed(false), [entry.id, coverUrl]);
   const retainedRatings = criteria
     .filter(
       (criterion) =>
@@ -79,12 +82,15 @@ export function LibraryWorkDetails({
         </div>
       )}
       <div className="detail-cover-frame">
-        {coverUrl ? (
+        {coverUrl && !coverFailed ? (
           <img
             src={coverUrl}
+            decoding="async"
+            referrerPolicy="no-referrer"
+            onError={() => setCoverFailed(true)}
             alt={t("library.ui.coverFor", { title: entry.title })}
           />
-        ) : entry.coverAssetId ? (
+        ) : entry.coverAssetId || entry.remoteCover ? (
           <span className="cover-unavailable">
             <ImagePlus size={20} />
             {t("library.ui.coverSaved")}

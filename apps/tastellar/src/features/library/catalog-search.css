@@ -1,0 +1,290 @@
+.catalog-search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 28px 22px;
+}
+.catalog-search-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.catalog-search-controls .field {
+  margin-bottom: 0;
+}
+.catalog-search-query input {
+  min-height: 37px;
+}
+.catalog-search-filters {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) 80px;
+  gap: 9px;
+  align-items: end;
+}
+.catalog-search-filters .field > span,
+.catalog-search-query > span {
+  font-size: 0.64rem;
+}
+.catalog-year-field input {
+  min-height: 35px;
+  padding: 7px 9px;
+  font-variant-numeric: tabular-nums;
+}
+.catalog-search-controls > .button {
+  align-self: flex-start;
+}
+.catalog-search-warning {
+  margin: -2px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 0.65rem;
+  line-height: 1.45;
+}
+.catalog-provider-disclosure {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+.catalog-provider-disclosure > .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+.catalog-provider-disclosure > p {
+  margin: 7px 0 0 19px;
+  color: var(--dim);
+  font-size: 0.59rem;
+  line-height: 1.5;
+}
+.catalog-provider-disclosure .catalog-session-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--muted);
+}
+.catalog-session-notice svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.catalog-credential-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 11px;
+}
+.catalog-credential-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--surface);
+}
+.catalog-credential-row > div:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.catalog-credential-row strong {
+  color: var(--text);
+  font-size: 0.65rem;
+  font-weight: 550;
+}
+.catalog-credential-row span {
+  color: var(--dim);
+  font-size: 0.58rem;
+}
+.catalog-credential-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+.catalog-credential-actions a,
+.catalog-credential-actions .text-button {
+  color: var(--muted);
+  font-size: 0.58rem;
+}
+.catalog-credential-actions .button {
+  min-height: 27px;
+  padding: 4px 8px;
+  font-size: 0.59rem;
+}
+.catalog-credential-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 5px;
+  padding: 13px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.catalog-credential-form h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.67rem;
+  font-weight: 550;
+}
+.catalog-credential-form .field {
+  margin: 0;
+}
+.catalog-credential-form .field > span {
+  font-size: 0.6rem;
+}
+.catalog-credential-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding-top: 2px;
+}
+.catalog-credential-buttons .button {
+  min-height: 29px;
+  padding: 5px 9px;
+  font-size: 0.6rem;
+}
+.catalog-provider-disclosure ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0 0 0 19px;
+  list-style: none;
+}
+.catalog-provider-disclosure li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.61rem;
+}
+.catalog-provider-disclosure li span {
+  max-width: 70%;
+  color: var(--dim);
+  text-align: right;
+}
+.catalog-search-empty {
+  margin: 2px 0;
+  color: var(--dim);
+  font-size: 0.68rem;
+  line-height: 1.55;
+}
+.catalog-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.catalog-result-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.catalog-result-card.selected {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+.catalog-result-cover {
+  width: 42px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  color: var(--dim);
+  background: var(--input);
+}
+.catalog-result-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.catalog-result-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.catalog-result-copy > strong,
+.catalog-result-copy > span,
+.catalog-result-copy > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.catalog-result-copy > strong {
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 550;
+}
+.catalog-result-copy > span,
+.catalog-result-copy > small {
+  color: var(--muted);
+  font-size: 0.59rem;
+}
+.catalog-result-copy .catalog-result-source {
+  color: var(--dim);
+}
+.catalog-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.catalog-result-actions > a {
+  width: 26px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--muted);
+}
+.catalog-result-actions > a:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.catalog-result-actions .button {
+  min-height: 29px;
+  padding: 5px 8px;
+  font-size: 0.59rem;
+}
+.catalog-load-more {
+  align-self: center;
+  margin-top: 4px;
+}
+@media (max-width: 580px) {
+  .catalog-search-panel {
+    padding: 16px;
+  }
+  .catalog-search-filters {
+    grid-template-columns: 1fr 1fr;
+  }
+  .catalog-year-field {
+    grid-column: 1 / -1;
+  }
+  .catalog-result-card {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+  .catalog-result-cover {
+    width: 36px;
+    height: 50px;
+  }
+  .catalog-result-actions {
+    grid-column: 2;
+    justify-content: flex-end;
+  }
+}

@@ -1,10 +1,8 @@
-# 18 — Version 0.1.0: macOS Home foundation
+# 18 — Home foundation (v0.1.0, macOS)
 
-## Authorized implementation slice
+## Milestone scope
 
-The user has now authorized application development, limited to the macOS foundation, Home, design/themes and settings. This supersedes the earlier documents' historical “documentation only / no code yet” wording for this slice. Do not implement Library, Ranking, Analytics or Recap beyond navigation icons, tabs and empty sidebar/view shells.
-
-The user subsequently requested that any further Sol delegation use **medium** reasoning, not high. Work stays inside Tastellar_App; no other conversations or unrelated folders are inputs.
+This milestone covered the macOS foundation, Home, themes, and settings. Library, Ranking, Analytics, and Recap appeared only as navigation icons, tabs, and empty shells at that stage; later foundation notes record their development.
 
 ## Implemented shape
 
@@ -34,13 +32,13 @@ Before the full-library archive specification is implemented, this slice provide
 
 Exports are staged/flushed and finalized without overwriting an existing file. Restores validate the entire document, avatar and preferences first; create a pre-import recovery copy under the data folder's `backups` directory; then replace the current slice in a transaction. Corrupt/newer data is rejected. Avatar bytes are managed immutably and remain available after replacement; automatic asset deletion is not enabled. Backup files contain personal text and images and are not automatically uploaded.
 
-Native review hardened avatar staging to create the final asset path only if absent, so a file created during staging cannot be overwritten. Asset reads require a hash-shaped filename within the managed assets directory and reject symlinks. The regression check covers preservation of an existing asset file.
+Avatar staging creates the final asset path only if absent, so a file created during staging cannot be overwritten. Asset reads require a hash-shaped filename within the managed assets directory and reject symlinks. A regression test verifies preservation of an existing asset file.
 
 Schema version 1 is created only for a new database. Unknown or damaged databases are never replaced with an empty library. Full recovery tooling, automated daily backups and released-version migrations need a later data-safety milestone before wider release.
 
 ## Platform and release boundaries
 
-This build validates macOS only. Windows/Android remain architectural targets, not tested claims. The user-approved slice defers the cross-platform/3D/export spikes from the original stage-0 plan until those features enter scope. The build is a local development app, not a signed/notarized public release.
+At this milestone, only the macOS build had been validated; Windows and Android were architectural targets, not tested claims. Cross-platform, 3D, and export work was deferred from the original stage-0 plan until those features entered scope. This was a local development build, not a signed or notarized public release.
 
 Development launch scripts set `TASTELLAR_DATA_DIR` to `.runtime/development` in the project. Packaged user launches normally use macOS Application Support; test launches must set the project-local override. Toolchains, package caches, browser test assets and build output are project-local and ignored by version control.
 
@@ -48,8 +46,6 @@ Development launch scripts set `TASTELLAR_DATA_DIR` to `.runtime/development` in
 
 See the root README for commands. Domain tests cover score/axis inputs and workspace references. Storage tests cover committed persistence, conflicts, image validation and Home backup restoration. Frontend tests cover prompt privacy/budgeting, taste sample eligibility, ties in input shapes and shortcut handling. Browser integration tests exercise Home edits, saved criteria/definitions, prompt copy, dirty-dialog protection, themes, tabs, empty feature shells and compact layout.
 
-Actual run results and remaining release limits belong in the delivery report; compiling a build does not establish all long-term performance or accessibility goals.
-
-## Final UI details
+## Preview and appearance details
 
 The profile card uses a constrained two-column layout; its orbital decoration has its own clipped layer so the avatar and text remain inside the card padding. Themes are CSS-token palettes rather than hardcoded per-component colors. System theme follows macOS appearance. Native prompt copying uses a clipboard-manager adapter; browser preview uses the browser clipboard and reports permission failure without hiding prompt text. Vite pre-optimizes the native adapters to avoid development-server reloads during the first Home edit. Test browser profiles and Rust/package caches are kept under `.tools`, and native preview data under `.runtime`.

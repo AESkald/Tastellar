@@ -14,6 +14,9 @@ export interface Preferences {
   nextTabShortcut: string;
   radarMode: "explicit" | "derived";
   visibleCriteria: string[];
+  analyticsBoundaryReviews: string[];
+  recapDrafts: string;
+  recapWatermark: boolean;
 }
 export interface WorkspaceTab {
   id: string;
@@ -92,6 +95,9 @@ export const initialState = (): HomeState => ({
     nextTabShortcut: "Alt+ArrowRight",
     radarMode: "explicit",
     visibleCriteria: [],
+    analyticsBoundaryReviews: [],
+    recapDrafts: JSON.stringify({ version: 1, drafts: [] }),
+    recapWatermark: true,
   },
   workspace: {
     tabs: [

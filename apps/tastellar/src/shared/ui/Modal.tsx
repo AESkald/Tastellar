@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { t } from "./i18n";
 export function Modal({
@@ -9,6 +9,7 @@ export function Modal({
   dirty = false,
   busy = false,
   wide = false,
+  className = "",
 }: {
   title: string;
   description?: string;
@@ -17,8 +18,10 @@ export function Modal({
   dirty?: boolean;
   busy?: boolean;
   wide?: boolean;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   const [discard, setDiscard] = useState(false);
   useEffect(() => {
     const dialog = ref.current;
@@ -35,7 +38,7 @@ export function Modal({
     <dialog
       data-dirty={dirty}
       ref={ref}
-      className={`modal ${wide ? "modal-wide" : ""}`}
+      className={`modal ${wide ? "modal-wide" : ""} ${className}`.trim()}
       onCancel={(e) => {
         e.preventDefault();
         requestClose();
@@ -52,12 +55,12 @@ export function Modal({
           requestClose();
         }
       }}
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
     >
       <div className="modal-inner">
         <header className="modal-header">
           <div>
-            <h2 id="modal-title">
+            <h2 id={titleId}>
               {discard ? t("common.discardTitle") : title}
             </h2>
             <p>{discard ? t("common.discardBody") : description}</p>

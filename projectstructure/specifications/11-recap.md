@@ -4,34 +4,38 @@ Recap creates editable local images; it does not post them. It has no Library gr
 
 ## Templates and exact eligibility
 
-Only active rated works are eligible by default; filters may narrow them. A missing cover never makes an otherwise eligible work ineligible. Use year predicates only on known release years, show omitted-date counts, and never imply complete year coverage.
+Only active rated works are eligible by default; filters may narrow them by media type and tags. Selected media types and the selected tag group combine with AND. The user can choose whether the tag group matches any selected tag or all selected tags; an empty tag selection adds no restriction. A missing cover never makes an otherwise eligible work ineligible. Use year predicates only on known release years, show omitted-date counts, and never imply complete year coverage.
 
-| Template | Minimum and selection | Initial export canvas |
+| Template | Minimum and selection | Canvas behavior |
 | --- | --- | --- |
-| My Personal Canon | ≥10 eligible; select top 10 | 1080 × 1920, portrait 9:16 |
-| The Throne and Its Challengers | ≥5; top 1 plus 2–5 | 1080 × 1350 |
-| 3 × 3 | ≥9; top 9 across selected media/filter | 1080 × 1080 |
-| My #1 by Release Year | ≥3 distinct known years in chosen range; best per year | Height 1080; width 240 per year column + 160 margin, max 4096; paginate longer ranges |
-| Best of Each Decade | ≥3 eligible decades; best per decade | 1080 × 1350 for 3–6 slots; 1920 × 1080 for 7–10; paginate beyond |
-| My #1 in Each Format | ≥2 active media types with at least one rated work; top per type, custom included | 1080 × 1350 up to 6 types; adaptive grid/pages above |
+| Top ten media | ≥10 eligible; select top 10 | User chooses portrait or landscape; landscape is the initial choice. #1 is dominant and the other nine form a 3 × 3 group. |
+| The Throne and Its Challengers | ≥5; top 1 plus 2–5 | User chooses portrait or landscape; landscape is the initial choice. |
+| 3 × 3 | ≥9; top 9 across selected media/filter | A true 3 × 3 of portrait covers, with #1 slightly larger in the center. It has no portrait/landscape chooser. |
+| My #1 by Release Year | ≥3 distinct known years in chosen range; best per year | The layout follows its year count and content. Paginate ranges that exceed renderer limits. |
+| Best of Each Decade | ≥2 eligible decades; best per decade | The layout adapts to the eligible decade count and content. |
+| My #1 in Each Format | ≥2 active media types with at least five rated works each; top per type, custom included | User chooses portrait or landscape; landscape is the initial choice. |
+
+Canvas dimensions follow the chosen composition and rendered content. Do not force a 9:16, 16:9, square, or padded mat around designs whose composition does not need it. Keep vertical cover cells near a 0.76 width-to-height ratio.
 
 A year/decade can contribute a single rated work, but label “My #1 among recorded works” and show eligible count in editor help; do not claim a contest among unrecorded releases. For a selected continuous year range, years without entries are visibly empty labeled slots or can be omitted by an explicit “Hide empty years” option. No placeholder cover masquerades as a winner. Date-less templates remain usable without dates. With fewer than two rated entries show a profile preview and invitation rather than an ineligible top template.
 
 ## Composition model and invariants
 
-A composition stores template/version, style, canvas preset, ordered slot IDs, source filter, original selected entry IDs, per-slot title/type/year/nullable rank and placed-state snapshot, cover asset reference/crop, text overrides, colors/font choices, and creation revision. A selected unplaced work has no rank snapshot; a user's explicit slot order is labeled “My selection,” not a library rank. Persist drafts. Library changes do not silently rearrange a saved composition: show “Library changed” with explicit Refresh from library and a preview of changes. A removed/trash entry can remain in a saved snapshot unless purged; purge handling follows Data safety.
+A composition stores template/version, style, canvas preset, ordered slot IDs, source filter including optional tag IDs and any/all tag mode, original selected entry IDs, per-slot title/type/year/nullable rank and placed-state snapshot, cover asset reference/crop, text overrides, colors/font choices, and creation revision. Persist drafts. Library changes do not silently rearrange a saved composition: show “Library changed” with explicit Refresh from library and a preview of changes. A removed/trash entry can remain in a saved snapshot unless purged; purge handling follows Data safety. Previously saved selection-template drafts remain archive-safe but are hidden from the active template gallery.
 
-Actions: swap two slots, remove a slot's work, click an empty slot to choose a replacement, edit heading/caption, choose style/mode, adjust crop, undo/redo draft edits. Rank numbers describe composition order when manually changed and are labeled “My selection” rather than falsely asserting current library rank. Default unedited compositions may say “My top 10.” Editing a composition never writes library ratings/order.
+Actions: swap two slots, remove a slot's work, click an empty slot to choose a replacement, edit heading/caption, choose style/mode, adjust crop, undo/redo draft edits. Opening an editor does not preselect a work. Clicking the selected slot again clears selection; completing a swap also clears selection. Default unedited compositions may say “My top 10.” Editing a composition never writes library ratings/order.
 
-Replacement picker initially enforces the slot predicate (same year/type where applicable); duplicates are disallowed within one composition. To use an out-of-predicate work, user must explicitly switch to a custom selection layout and remove the now-false semantic heading. A removed slot remains editable and exports as intentional whitespace/text tile; it does not cause invisible reindexing until the user chooses Compact layout.
+Replacement picker enforces the active media and tag filters plus the slot predicate (same year/type where applicable); duplicates are disallowed within one composition. A removed slot remains editable and exports as intentional whitespace/text tile; it does not cause invisible reindexing.
 
 ## Layout and visual system
 
-Personal Canon uses ten content regions with #1 approximately twice the area of each other work. Starting grid: 3 columns × 4 equal-height units, #1 spans 2 × 1 units, #2 uses remaining first-row unit, #3–#10 use eight following units, final spare unit holds title/profile/watermark. Cropped portrait images sit inside each card with readable title/rank overlay or adjacent strip. Validate this asymmetrical layout at export size, not just thumbnail size.
+Top ten uses a dominant #1 cover and a square 3 × 3 of the remaining nine works, arranged below it for portrait and beside it for landscape. Large rank numbers stay legible without overpowering the artwork. The 3 × 3 template places #1 in a slightly larger central panel. Template section names belong to the gallery, never to the exported poster; headings and captions in the image are optional user content.
 
-Initial styles for Canon: minimalist (quiet typography), magazine (editorial headings), VHS (restrained analog texture), manga panel (monochrome borders and captions), brutalist (large type and hard grid). Styles share the same composition semantics, editing affordances, and contrast rules. Other templates initially offer minimalist plus compatible styles; do not promise every style/layout combination before QA.
+Styles are Dark, Daylight, Dusk, and Reading, with palettes that fit their corresponding app themes. Style choice belongs in the editor, not in the template feed; new compositions default to the palette matching the active app theme. Each style shares the same editing affordances and contrast rules. The selected style remains stable through preview and export. Older saved styles Quiet, Paper, and Editorial remain readable and are normalized to Dark, Reading, and Dusk when edited.
 
-All templates support cover and text modes. Cover mode uses neutral mats, consistent crops, legible title bands, and optional desaturated background accents to tolerate clashing artwork. Missing-cover cards use the same visual weight with title, type/year, and deliberate typography. Text mode is a designed layout, not empty image frames. Mixed mode must still look intentional. Protect watermark and title safe areas; watermark is subtle readable “Made with Tastellar”, with no invented URL or account identifier.
+Cover and text modes are available where the layout supports both. Cover mode gives artwork the main visual area, uses full-bleed portrait covers without oversized surrounding mats, and tolerates clashing source palettes. A missing-cover tile uses its media-type icon (or a clear initial when no icon is available), with the same caption placement as a covered tile. Each work has one consistent bottom caption area for its short label and optional media-type label. Users can toggle work names and media-type labels independently. Text mode is a deliberate typographic composition, not empty image frames. Keep the watermark and captions inside safe areas; watermark is subtle readable “Made with Tastellar” near the top, with no invented URL or account identifier. It is enabled by default. One global preference controls the watermark across every template. Each attempt to disable it opens a generously padded dialog explaining that Tastellar is free, ad-free, non-commercial, and open source and asking users to help popularize it. Removal remains available; re-enabling needs no dialog.
+
+Use the same scene/layout output for the gallery preview, editor canvas, and exported image. Fit feed posters and editor canvases inside the available viewport width while preserving their canvas aspect ratio; overlays and hit targets stay aligned at every screen size, including 3 × 3. Editing controls span the available editor width for their choices. Saved Recaps can be removed individually or cleared together; clearing all requires a confirmation.
 
 ## Export pipeline
 

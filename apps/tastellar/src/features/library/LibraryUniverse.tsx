@@ -416,7 +416,7 @@ export function LibraryUniverse({
   reducedMotion: boolean;
   onQualityChange?: (quality: GraphicsQuality) => void | Promise<void>;
   onSelect: (id: string) => void;
-  onLoadCover?: (entryId: string) => Promise<string | null>;
+  onLoadCover?: (entryId: string, assetId?: string | null) => Promise<string | null>;
   onAddWork: () => void;
   onClearFilters: () => void;
   emptyBecauseFiltered: boolean;
@@ -464,10 +464,10 @@ export function LibraryUniverse({
           if (!work.coverAssetId || !onLoadCover) continue;
           let request = paletteRequests.current.get(work.coverAssetId);
           if (!request) {
-            request = onLoadCover(work.id)
+            request = onLoadCover(work.id, work.coverAssetId)
               .then((source) =>
                 source
-                  ? extractCoverPalette(source, work.id)
+                  ? extractCoverPalette(source, work.id, work.coverAssetId ?? undefined)
                   : paletteFromSeed(work.id),
               )
               .catch(() => paletteFromSeed(work.id));

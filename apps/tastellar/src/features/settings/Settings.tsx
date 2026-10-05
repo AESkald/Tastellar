@@ -12,6 +12,7 @@ import {
   Info,
   ArrowUpRight,
   Trash2,
+  Heart,
 } from "lucide-react";
 import type { Preferences, Theme, Workspace } from "../../shared/bridge/types";
 import {
@@ -23,6 +24,8 @@ import { ImportExportPanel } from "./ImportExportPanel";
 import { t } from "../../shared/ui/i18n";
 import { Modal } from "../../shared/ui/Modal";
 import { SelectControl } from "../../shared/ui/SelectControl";
+import { ExternalLink } from "../../shared/ui/ExternalLink";
+import "./support.css";
 import {
   DEFAULT_TAB_SHORTCUTS,
   shortcutAllowed,
@@ -448,6 +451,71 @@ export function Settings({
               <div className="build-label">
                 <span className="status-dot" />
                 {t("settings.about")}
+              </div>
+              <section
+                className="about-credits"
+                aria-labelledby="about-credits-heading"
+              >
+                <h3 id="about-credits-heading">
+                  {t("settings.providerCreditsTitle")}
+                </h3>
+                <ul className="provider-credit-list">
+                  <li className="provider-credit-tmdb">
+                    <ExternalLink
+                      className="tmdb-logo-link"
+                      href="https://www.themoviedb.org"
+                      aria-label={t("settings.tmdbLogoAlt")}
+                    >
+                      <img
+                        src="/tmdb-logo.svg"
+                        alt={t("settings.tmdbLogoAlt")}
+                      />
+                    </ExternalLink>
+                    <p>{t("settings.tmdbAttribution")}</p>
+                  </li>
+                  <li>
+                    <span>{t("settings.openLibraryCredit")}</span>
+                    <ExternalLink href="https://openlibrary.org">
+                      Open Library <ArrowUpRight size={13} aria-hidden="true" />
+                    </ExternalLink>
+                  </li>
+                  <li>
+                    <span>{t("settings.googleBooksCredit")}</span>
+                    <ExternalLink href="https://books.google.com">
+                      Google Books <ArrowUpRight size={13} aria-hidden="true" />
+                    </ExternalLink>
+                  </li>
+                  <li>
+                    <span>{t("settings.igdbCredit")}</span>
+                    <ExternalLink href="https://www.igdb.com">
+                      IGDB <ArrowUpRight size={13} aria-hidden="true" />
+                    </ExternalLink>
+                  </li>
+                  <li>
+                    <span>{t("settings.steamImportCredit")}</span>
+                    <ExternalLink href="https://steamcommunity.com/dev/apiterms">
+                      Steam API terms{" "}
+                      <ArrowUpRight size={13} aria-hidden="true" />
+                    </ExternalLink>
+                  </li>
+                </ul>
+              </section>
+              <div className="settings-support-card">
+                <Heart size={18} aria-hidden="true" />
+                <div>
+                  <h3>{t("settings.supportTitle")}</h3>
+                  <p>{t("settings.supportBody")}</p>
+                  <ExternalLink href="https://boosty.to/tastellar">
+                    {t("settings.supportAction")}{" "}
+                    <ArrowUpRight size={14} aria-hidden="true" />
+                  </ExternalLink>
+                  <ExternalLink
+                    className="support-url"
+                    href="https://boosty.to/tastellar"
+                  >
+                    boosty.to/tastellar
+                  </ExternalLink>
+                </div>
               </div>
             </section>
           )}

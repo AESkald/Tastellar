@@ -1445,6 +1445,7 @@ export function Ranking({
         <Modal
           title={t(help === "tiers" ? "ranking.tierHelpTitle" : "ranking.duelHelpTitle")}
           description={t(help === "tiers" ? "ranking.tierHelpDescription" : "ranking.duelHelpDescription")}
+          className="ranking-help-modal"
           onClose={() => setHelp(null)}
         >
           <div className="ranking-help-body">
@@ -1452,8 +1453,8 @@ export function Ranking({
             <ul>
               {(help === "tiers" ? ["ranking.tierHelpPointOne", "ranking.tierHelpPointTwo", "ranking.tierHelpPointThree"] : ["ranking.duelHelpPointOne", "ranking.duelHelpPointTwo", "ranking.duelHelpPointThree"]).map((key) => <li key={key}>{t(key)}</li>)}
             </ul>
-            <div className="modal-actions"><button className="button primary" onClick={() => setHelp(null)}>{t("common.done")}</button></div>
           </div>
+          <footer className="modal-actions ranking-help-actions"><button className="button primary" onClick={() => setHelp(null)}>{t("common.done")}</button></footer>
         </Modal>
       )}
 

@@ -82,6 +82,6 @@ test("About displays the short 0.4 release version", async ({ page }) => {
     .getByRole("navigation", { name: "Settings categories" })
     .getByRole("button", { name: "About", exact: true })
     .click();
-  await expect(page.locator(".about-card")).toContainText("Version 0.4");
-  await expect(page.locator(".about-card")).not.toContainText("0.4.0");
+  await expect(page.locator(".about-card")).toContainText("Version 1.0");
+  await expect(page.locator(".about-card")).not.toContainText("1.0.0");
 });

@@ -4,12 +4,16 @@ import home from "../../features/home/messages/en.json";
 import library from "../../features/library/messages/en.json";
 import settings from "../../features/settings/messages/en.json";
 import ranking from "../../features/ranking/messages/en.json";
+import analytics from "../../features/analytics/messages/en.json";
+import recap from "../../features/recap/messages/en.json";
 const messages: Record<string, string> = {
   ...common,
   ...home,
   ...library,
   ...settings,
   ...ranking,
+  ...analytics,
+  ...recap,
 };
 const compiled = new Map<string, IntlMessageFormat>();
 export function t(

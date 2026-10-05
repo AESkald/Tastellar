@@ -236,6 +236,10 @@ textarea {
   padding-left: 98px;
   width: 216px;
 }
+.windows-app .titlebar-brand {
+  padding-left: 27px;
+  width: 194px;
+}
 .brand-word {
   font-size: 0.61rem;
   letter-spacing: 0.19em;
@@ -318,6 +322,9 @@ textarea {
   transition:
     background 0.15s,
     color 0.15s;
+}
+.panel-toggle[hidden] {
+  display: none;
 }
 .icon-button:hover,
 .icon-button.active {
@@ -2185,6 +2192,34 @@ textarea::placeholder {
   max-width: 300px;
   margin-top: 20px;
 }
+.tmdb-credit {
+  width: min(100%, 360px);
+  margin-top: 27px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.tmdb-logo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: #fff;
+}
+.tmdb-logo-link img {
+  display: block;
+  width: 112px;
+  max-height: 27px;
+  object-fit: contain;
+}
+.tmdb-credit p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
 .build-label {
   display: flex;
   align-items: center;
@@ -2559,6 +2594,13 @@ textarea::placeholder {
   .native-app .titlebar-brand {
     width: 89px;
     padding-left: 0;
+  }
+  .windows-app .titlebar-brand {
+    width: 60px;
+    padding-left: 16px;
+  }
+  .windows-app .titlebar-brand .brand-word {
+    display: inline;
   }
   .native-app .titlebar-brand .brand-word {
     display: none;

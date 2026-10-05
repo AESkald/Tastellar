@@ -16,8 +16,8 @@ use std::{
 use tastellar_domain::{
     validate_criterion, validate_entry, validate_guidelines, validate_media_type,
     validate_preferences, validate_profile, validate_tag, validate_taste_inputs,
-    validate_workspace, CriterionInput, Entry, EntryInput, HomeState, LibraryState, MediaTypeInput,
-    ProfileInput, TagInput,
+    validate_workspace, CriterionInput, Entry, EntryInput, HomeState, LibraryState,
+    LibraryViewSnapshot, MediaTypeInput, Profile, ProfileInput, TagInput,
 };
 
 const FORMAT: &str = "tastellar-library";
@@ -297,7 +297,7 @@ impl Storage {
                 "Archive is larger than the supported import limit".into(),
             ));
         }
-        let archive: PortableArchive = deserialize_exact(&bytes)?;
+        let (archive, original_archive): (PortableArchive, _) = deserialize_exact(&bytes)?;
         let manifest = &archive.manifest;
         if manifest.format != FORMAT
             || ![
@@ -318,7 +318,10 @@ impl Storage {
             ));
         }
         validate_manifest(manifest, archive.assets.len(), manifest.format_version)?;
-        let home_bytes = serde_json::to_vec_pretty(&archive.home)?;
+        let original_home = original_archive
+            .get("home")
+            .ok_or_else(|| StorageError::Validation("Archive is missing its Home data".into()))?;
+        let home_bytes = serialize_home_for_verification(&archive.home, original_home)?;
         let library_bytes = serde_json::to_vec_pretty(&archive.library)?;
         let history_bytes = serde_json::to_vec_pretty(&archive.history)?;
         verify_virtual_file(manifest, HOME_PATH, &home_bytes)?;
@@ -506,6 +509,8 @@ impl Storage {
                         media_type_id: row.get(4)?,
                         overall_rating: row.get(5)?,
                         cover_asset_id: row.get(6)?,
+                        external_identities: Vec::new(),
+                        remote_cover: None,
                         release_date,
                         review_text: row.get(11)?,
                         legacy_notes_text: None,
@@ -521,6 +526,8 @@ impl Storage {
             })?;
             for row in rows {
                 let (mut entry, trashed_at) = row?;
+                entry.external_identities = self.load_external_identities(&entry.id)?;
+                entry.remote_cover = self.load_remote_cover(&entry.id)?;
                 {
                     let mut ratings = self.conn.prepare(
                         "SELECT criterion_id,score FROM criterion_rating WHERE entry_id=?1 ORDER BY criterion_id",
@@ -851,16 +858,192 @@ fn verify_virtual_file(
     Ok(())
 }
 
-fn deserialize_exact<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T, StorageError> {
+const DEFAULT_RECAP_DRAFTS_FOR_ARCHIVE: &str = r#"{"version":1,"drafts":[]}"#;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HomeForVerification<'a> {
+    version: i64,
+    profile: &'a Profile,
+    guidelines: &'a BTreeMap<String, String>,
+    taste_inputs: &'a BTreeMap<String, i32>,
+    preferences: PreferencesForVerification<'a>,
+    workspace: WorkspaceForVerification<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreferencesForVerification<'a> {
+    theme: &'a str,
+    text_scale: f64,
+    reduced_motion: &'a str,
+    graphics: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scenes_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remember_sidebars_per_tab: Option<bool>,
+    restore_tabs: bool,
+    startup_section: &'a str,
+    previous_tab_shortcut: &'a str,
+    next_tab_shortcut: &'a str,
+    radar_mode: &'a str,
+    visible_criteria: &'a [String],
+    #[serde(skip_serializing_if = "string_slice_is_empty_for_archive")]
+    analytics_boundary_reviews: &'a [String],
+    #[serde(skip_serializing_if = "is_default_recap_drafts_for_archive")]
+    recap_drafts: &'a String,
+    #[serde(skip_serializing_if = "is_true_for_archive")]
+    recap_watermark: bool,
+}
+
+fn is_default_recap_drafts_for_archive(value: &&String) -> bool {
+    value.as_str() == DEFAULT_RECAP_DRAFTS_FOR_ARCHIVE
+}
+
+fn string_slice_is_empty_for_archive(value: &&[String]) -> bool {
+    value.is_empty()
+}
+
+fn is_true_for_archive(value: &bool) -> bool {
+    *value
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceForVerification<'a> {
+    tabs: Vec<WorkspaceTabForVerification<'a>>,
+    active_tab_id: &'a Option<String>,
+    rail_collapsed: bool,
+    details_open: bool,
+    details_width: f64,
+    folder_open: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceTabForVerification<'a> {
+    id: &'a str,
+    section: &'a str,
+    title: &'a str,
+    scroll_top: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    library_view: Option<Option<&'a LibraryViewSnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder_open: Option<Option<bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details_open: Option<Option<bool>>,
+}
+
+/// Recreates the standalone Home JSON using the fields present in this archive.
+/// Older portable exports predate several defaulted preferences and workspace
+/// fields; including their newly synthesized defaults would fail their original
+/// manifest checksum despite restoring the same state.
+fn serialize_home_for_verification(
+    home: &HomeState,
+    original: &serde_json::Value,
+) -> Result<Vec<u8>, StorageError> {
+    let original_preferences = original.get("preferences").ok_or_else(|| {
+        StorageError::Validation("Archive is missing its Home preferences".into())
+    })?;
+    let original_workspace = original
+        .get("workspace")
+        .ok_or_else(|| StorageError::Validation("Archive is missing its workspace".into()))?;
+    let original_tabs = original_workspace
+        .get("tabs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| StorageError::Validation("Archive workspace tabs are invalid".into()))?;
+    if original_tabs.len() != home.workspace.tabs.len() {
+        return Err(StorageError::Validation(
+            "Archive workspace tabs are invalid".into(),
+        ));
+    }
+    let preferences = &home.preferences;
+    let workspace = &home.workspace;
+    let projected = HomeForVerification {
+        version: home.version,
+        profile: &home.profile,
+        guidelines: &home.guidelines,
+        taste_inputs: &home.taste_inputs,
+        preferences: PreferencesForVerification {
+            theme: &preferences.theme,
+            text_scale: preferences.text_scale,
+            reduced_motion: &preferences.reduced_motion,
+            graphics: &preferences.graphics,
+            scenes_enabled: original_preferences
+                .get("scenesEnabled")
+                .map(|_| preferences.scenes_enabled),
+            remember_sidebars_per_tab: original_preferences
+                .get("rememberSidebarsPerTab")
+                .map(|_| preferences.remember_sidebars_per_tab),
+            restore_tabs: preferences.restore_tabs,
+            startup_section: &preferences.startup_section,
+            previous_tab_shortcut: &preferences.previous_tab_shortcut,
+            next_tab_shortcut: &preferences.next_tab_shortcut,
+            radar_mode: &preferences.radar_mode,
+            visible_criteria: &preferences.visible_criteria,
+            analytics_boundary_reviews: &preferences.analytics_boundary_reviews,
+            recap_drafts: &preferences.recap_drafts,
+            recap_watermark: preferences.recap_watermark,
+        },
+        workspace: WorkspaceForVerification {
+            tabs: workspace
+                .tabs
+                .iter()
+                .zip(original_tabs)
+                .map(|(tab, original_tab)| WorkspaceTabForVerification {
+                    id: &tab.id,
+                    section: &tab.section,
+                    title: &tab.title,
+                    scroll_top: tab.scroll_top,
+                    library_view: original_tab
+                        .get("libraryView")
+                        .map(|_| tab.library_view.as_ref()),
+                    folder_open: original_tab.get("folderOpen").map(|_| tab.folder_open),
+                    details_open: original_tab.get("detailsOpen").map(|_| tab.details_open),
+                })
+                .collect(),
+            active_tab_id: &workspace.active_tab_id,
+            rail_collapsed: workspace.rail_collapsed,
+            details_open: workspace.details_open,
+            details_width: workspace.details_width,
+            folder_open: workspace.folder_open,
+        },
+    };
+    Ok(serde_json::to_vec_pretty(&projected)?)
+}
+
+fn json_preserves_input(original: &serde_json::Value, decoded: &serde_json::Value) -> bool {
+    match (original, decoded) {
+        (serde_json::Value::Object(original), serde_json::Value::Object(decoded)) => {
+            original.iter().all(|(key, value)| {
+                decoded
+                    .get(key)
+                    .is_some_and(|decoded| json_preserves_input(value, decoded))
+            })
+        }
+        (serde_json::Value::Array(original), serde_json::Value::Array(decoded)) => {
+            original.len() == decoded.len()
+                && original
+                    .iter()
+                    .zip(decoded)
+                    .all(|(original, decoded)| json_preserves_input(original, decoded))
+        }
+        _ => original == decoded,
+    }
+}
+
+fn deserialize_exact<T: DeserializeOwned + Serialize>(
+    bytes: &[u8],
+) -> Result<(T, serde_json::Value), StorageError> {
     validate_json_depth(bytes, 20)?;
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     let decoded: T = serde_json::from_value(value.clone())?;
-    if serde_json::to_value(&decoded)? != value {
+    if !json_preserves_input(&value, &serde_json::to_value(&decoded)?) {
         return Err(StorageError::Validation(
             "Archive contains fields this version cannot preserve".into(),
         ));
     }
-    Ok(decoded)
+    Ok((decoded, value))
 }
 
 fn validate_json_depth(bytes: &[u8], maximum: usize) -> Result<(), StorageError> {
@@ -968,6 +1151,33 @@ fn referenced_asset_ids(
                 .iter()
                 .filter_map(|item| item.entry.cover_asset_id.clone()),
         )
+        .chain(recap_cover_asset_ids(&home.preferences.recap_drafts))
+        .collect()
+}
+
+fn recap_cover_asset_ids(raw: &str) -> Vec<String> {
+    let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    snapshot
+        .get("drafts")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|draft| {
+            draft
+                .get("slots")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|slot| {
+                    slot.get("entry")?
+                        .get("coverAssetId")?
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
@@ -1081,6 +1291,9 @@ fn validate_portable_state(
             media_type_id: entry.media_type_id.clone(),
             overall_rating: entry.overall_rating,
             cover_asset_id: entry.cover_asset_id.clone(),
+            external_identities: Some(entry.external_identities.clone()),
+            remote_cover: entry.remote_cover.clone(),
+            clear_remote_cover: false,
             release_date: entry.release_date.clone(),
             review_text: entry.review_text.clone(),
             short_label: entry.short_label.clone(),
@@ -1123,6 +1336,9 @@ fn validate_portable_state(
             media_type_id: entry.media_type_id.clone(),
             overall_rating: entry.overall_rating,
             cover_asset_id: entry.cover_asset_id.clone(),
+            external_identities: Some(entry.external_identities.clone()),
+            remote_cover: entry.remote_cover.clone(),
+            clear_remote_cover: false,
             release_date: entry.release_date.clone(),
             review_text: entry.review_text.clone(),
             short_label: entry.short_label.clone(),
@@ -1177,6 +1393,11 @@ fn validate_history(
     }
     let mut event_ids = HashSet::new();
     for event in &history.entry_events {
+        let payload = serde_json::from_str::<serde_json::Value>(&event.payload_json).ok();
+        let valid_source_activity = event.kind != "external_source_activity"
+            || payload
+                .as_ref()
+                .is_some_and(valid_external_source_activity_payload);
         if event.id.is_empty()
             || event.id.len() > 100
             || !event_ids.insert(event.id.as_str())
@@ -1185,7 +1406,8 @@ fn validate_history(
             || event.occurred_at.is_empty()
             || event.recorded_at.is_empty()
             || event.source.is_empty()
-            || serde_json::from_str::<serde_json::Value>(&event.payload_json).is_err()
+            || payload.is_none()
+            || !valid_source_activity
         {
             return Err(StorageError::Validation(
                 "Archive contains an invalid entry event".into(),
@@ -1244,6 +1466,23 @@ fn validate_history(
         }
     }
     Ok(())
+}
+
+fn valid_external_source_activity_payload(payload: &serde_json::Value) -> bool {
+    let Some(provider) = payload.get("provider").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(activity) = payload.get("activity") else {
+        return false;
+    };
+    let fingerprint = activity
+        .get("fingerprint")
+        .and_then(serde_json::Value::as_str);
+    let kind = activity.get("kind").and_then(serde_json::Value::as_str);
+    !provider.trim().is_empty()
+        && provider.chars().count() <= 50
+        && fingerprint.is_some_and(|value| !value.trim().is_empty() && value.len() <= 200)
+        && kind.is_some_and(|value| !value.trim().is_empty() && value.len() <= 50)
 }
 
 fn validate_import_orders(
@@ -1435,9 +1674,15 @@ fn insert_entry(
 ) -> Result<(), StorageError> {
     let release = entry.release_date.as_ref();
     tx.execute(
-        "INSERT INTO entry(id,title,disposition,media_type_id,overall_rating,cover_asset_id,release_year,release_month,release_day,release_precision,review_text,short_label,created_at,updated_at,version,trashed_at,import_order) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
-        params![entry.id,entry.title.trim(),entry.disposition,entry.media_type_id,entry.overall_rating,entry.cover_asset_id,release.map(|date|date.year),release.and_then(|date|date.month),release.and_then(|date|date.day),release.map(|date|date.precision.as_str()),entry.review_text,entry.short_label,entry.created_at,entry.updated_at,entry.version,trashed_at,import_order],
+        "INSERT INTO entry(id,title,disposition,media_type_id,overall_rating,cover_asset_id,release_year,release_month,release_day,release_precision,review_text,short_label,created_at,updated_at,version,trashed_at,import_order,remote_cover_provider,remote_cover_url,remote_cover_source_url,remote_cover_attribution) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+        params![entry.id,entry.title.trim(),entry.disposition,entry.media_type_id,entry.overall_rating,entry.cover_asset_id,release.map(|date|date.year),release.and_then(|date|date.month),release.and_then(|date|date.day),release.map(|date|date.precision.as_str()),entry.review_text,entry.short_label,entry.created_at,entry.updated_at,entry.version,trashed_at,import_order,entry.remote_cover.as_ref().map(|cover|cover.provider.as_str()),entry.remote_cover.as_ref().map(|cover|cover.url.as_str()),entry.remote_cover.as_ref().and_then(|cover|cover.source_url.as_deref()),entry.remote_cover.as_ref().and_then(|cover|cover.attribution.as_deref())],
     )?;
+    for identity in &entry.external_identities {
+        tx.execute(
+            "INSERT INTO external_identity(provider,entity_kind,external_id,source_url,entry_id) VALUES(?1,?2,?3,?4,?5)",
+            params![identity.provider,identity.entity_kind,identity.external_id,identity.source_url,entry.id],
+        )?;
+    }
     for (criterion_id, score) in &entry.criterion_ratings {
         let recorded_at = rating_timestamps
             .get(&(entry.id.as_str(), criterion_id.as_str()))
@@ -1483,6 +1728,29 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn portable_source_activity_events_keep_the_provider_activity_kind_contract() {
+        assert!(valid_external_source_activity_payload(&serde_json::json!({
+            "provider": "steam",
+            "activity": { "kind": "owned", "fingerprint": "steam:62002:120" }
+        })));
+        assert!(valid_external_source_activity_payload(&serde_json::json!({
+            "provider": "imdb",
+            "activity": { "kind": "item", "fingerprint": "imdb:tt99000001" }
+        })));
+        assert!(!valid_external_source_activity_payload(
+            &serde_json::json!({
+                "provider": "steam",
+                "activity": { "kind": "owned" }
+            })
+        ));
+        assert!(!valid_external_source_activity_payload(
+            &serde_json::json!({
+                "activity": { "kind": "owned", "fingerprint": "steam:62002" }
+            })
+        ));
+    }
+
     fn png_data(color: [u8; 4]) -> (Vec<u8>, String) {
         let image = image::RgbaImage::from_pixel(1, 1, image::Rgba(color));
         let mut cursor = std::io::Cursor::new(Vec::new());
@@ -1502,6 +1770,9 @@ mod tests {
             media_type_id: None,
             overall_rating: None,
             cover_asset_id: None,
+            external_identities: None,
+            remote_cover: None,
+            clear_remote_cover: false,
             release_date: None,
             review_text: String::new(),
             short_label: None,
@@ -1518,6 +1789,9 @@ mod tests {
             media_type_id: None,
             overall_rating: Some(score),
             cover_asset_id: None,
+            external_identities: None,
+            remote_cover: None,
+            clear_remote_cover: false,
             release_date: None,
             review_text: String::new(),
             short_label: None,
@@ -1825,13 +2099,45 @@ mod tests {
             descriptor.sha256 = hex_hash(bytes);
             descriptor.byte_size = bytes.len() as u64;
         }
-        fs::write(&archive_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        let mut legacy_value = serde_json::to_value(&legacy).unwrap();
+        let legacy_home = legacy_value["home"].as_object_mut().unwrap();
+        let legacy_preferences = legacy_home["preferences"].as_object_mut().unwrap();
+        legacy_preferences.remove("scenesEnabled");
+        legacy_preferences.remove("rememberSidebarsPerTab");
+        for tab in legacy_home["workspace"]["tabs"].as_array_mut().unwrap() {
+            let tab = tab.as_object_mut().unwrap();
+            tab.remove("folderOpen");
+            tab.remove("detailsOpen");
+        }
+        let home_bytes =
+            serialize_home_for_verification(&legacy.home, &legacy_value["home"]).unwrap();
+        let descriptor = legacy_value["manifest"]["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| file["path"] == HOME_PATH)
+            .unwrap();
+        descriptor["sha256"] = hex_hash(&home_bytes).into();
+        descriptor["byteSize"] = home_bytes.len().into();
+        fs::write(
+            &archive_path,
+            serde_json::to_vec_pretty(&legacy_value).unwrap(),
+        )
+        .unwrap();
 
         let mut target = Storage::open(&target_root).unwrap();
         let target_revision = target.load_home().unwrap().version;
         target
             .import_library_archive(&archive_path, target_revision)
             .unwrap();
+        let restored_home = target.load_home().unwrap();
+        assert!(restored_home.preferences.scenes_enabled);
+        assert!(restored_home.preferences.remember_sidebars_per_tab);
+        assert!(restored_home
+            .workspace
+            .tabs
+            .iter()
+            .all(|tab| tab.folder_open.is_none() && tab.details_open.is_none()));
         let ranking = target.load_ranking().unwrap();
         let tier = ranking.tiers.iter().find(|tier| tier.score == 7).unwrap();
         assert_eq!(tier.placed_ids, vec!["zeta", "alpha"]);
@@ -2136,6 +2442,9 @@ mod tests {
                     media_type_id: Some("film".into()),
                     overall_rating: Some(9),
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: None,
                     review_text: "A favorite.".into(),
                     short_label: Some("Stars".into()),
@@ -2164,6 +2473,9 @@ mod tests {
                     media_type_id: None,
                     overall_rating: None,
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: None,
                     review_text: String::new(),
                     short_label: None,
@@ -2295,9 +2607,11 @@ mod tests {
         let archive_path = source_root.join("complete.tastellar.json");
         let (avatar_bytes, avatar_base64) = png_data([240, 20, 30, 255]);
         let (active_cover_bytes, active_cover_base64) = png_data([20, 240, 30, 255]);
+        let (replaced_cover_bytes, replaced_cover_base64) = png_data([240, 170, 20, 255]);
         let (trashed_cover_bytes, trashed_cover_base64) = png_data([20, 30, 240, 255]);
         let avatar_hash = hex_hash(&avatar_bytes);
         let active_cover_hash = hex_hash(&active_cover_bytes);
+        let replaced_cover_hash = hex_hash(&replaced_cover_bytes);
         let trashed_cover_hash = hex_hash(&trashed_cover_bytes);
 
         let mut source = Storage::open(&source_root).unwrap();
@@ -2320,6 +2634,56 @@ mod tests {
             .unwrap();
         let mut preferences = home.preferences.clone();
         preferences.theme = "forest".into();
+        preferences.analytics_boundary_reviews = vec![
+            "10:upper-a:lower-b:order-17".into(),
+            "9:upper-c:lower-d:order-23".into(),
+        ];
+        preferences.recap_watermark = false;
+        preferences.recap_drafts = serde_json::json!({
+            "version": 1,
+            "drafts": [{
+                "id": "draft-canon",
+                "version": 1,
+                "templateId": "topTen",
+                "libraryRevision": home.version,
+                "filter": {
+                    "kind": "types",
+                    "typeIds": ["film"],
+                    "tagIds": ["tag-a", "tag-b"],
+                    "tagMode": "all"
+                },
+                "style": "editorial",
+                "mode": "mixed",
+                "orientation": "portrait",
+                "showTitles": true,
+                "showMediaTypes": false,
+                "watermark": true,
+                "heading": "My top ten",
+                "caption": "",
+                "rankingLabel": "canonical",
+                "slots": [{
+                    "id": "slot-1",
+                    "page": 0,
+                    "entry": {
+                        "id": "story-1",
+                        "title": "Across the stars",
+                        "mediaTypeId": "film",
+                        "mediaTypeName": "Film",
+                        "shortLabel": "Across stars",
+                        "iconKey": "film",
+                        "year": 2020,
+                        "coverAssetId": active_cover_hash
+                    },
+                    "rank": 1,
+                    "label": null,
+                    "predicate": { "kind": "any" },
+                    "titleOverride": null
+                }],
+                "createdAt": "2026-10-03T00:00:00.000Z",
+                "updatedAt": "2026-10-03T00:00:00.000Z"
+            }]
+        })
+        .to_string();
         let home = source.save_preferences(home.version, preferences).unwrap();
         let criterion = source
             .save_criterion(
@@ -2378,6 +2742,9 @@ mod tests {
                     media_type_id: Some("film".into()),
                     overall_rating: Some(9),
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: Some(ReleaseDate {
                         year: 2020,
                         month: Some(5),
@@ -2404,6 +2771,14 @@ mod tests {
                 "story-1",
                 "image/png",
                 &active_cover_base64,
+            )
+            .unwrap();
+        let active = source
+            .save_entry_cover(
+                active.revision,
+                "story-1",
+                "image/png",
+                &replaced_cover_base64,
             )
             .unwrap();
         source
@@ -2437,6 +2812,9 @@ mod tests {
                     media_type_id: Some("film".into()),
                     overall_rating: None,
                     cover_asset_id: None,
+                    external_identities: None,
+                    remote_cover: None,
+                    clear_remote_cover: false,
                     release_date: Some(ReleaseDate {
                         year: 2022,
                         month: Some(2),
@@ -2491,9 +2869,13 @@ mod tests {
         source.export_library_archive(&archive_path).unwrap();
         let exported: PortableArchive =
             serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
-        assert_eq!(exported.assets.len(), 3);
+        assert_eq!(exported.assets.len(), 4);
         assert_eq!(exported.manifest.datasets["trashedEntries"], 1);
-        assert_eq!(exported.manifest.datasets["assets"], 3);
+        assert_eq!(exported.manifest.datasets["assets"], 4);
+        assert!(exported
+            .assets
+            .iter()
+            .any(|asset| asset.sha256 == active_cover_hash));
 
         let mut target = Storage::open(&target_root).unwrap();
         let target_revision = target.load_home().unwrap().version;
@@ -2511,6 +2893,41 @@ mod tests {
         assert_eq!(restored.guidelines["10"], "Stories I carry with me");
         assert_eq!(restored.taste_inputs["plot"], 8);
         assert_eq!(restored.preferences.theme, "forest");
+        assert_eq!(
+            restored.preferences.analytics_boundary_reviews,
+            ["10:upper-a:lower-b:order-17", "9:upper-c:lower-d:order-23",]
+        );
+        assert!(!restored.preferences.recap_watermark);
+        let recap_drafts: serde_json::Value =
+            serde_json::from_str(&restored.preferences.recap_drafts).unwrap();
+        assert_eq!(recap_drafts["drafts"][0]["style"], "editorial");
+        assert_eq!(recap_drafts["drafts"][0]["mode"], "mixed");
+        assert_eq!(recap_drafts["drafts"][0]["showMediaTypes"], false);
+        assert_eq!(
+            recap_drafts["drafts"][0]["filter"],
+            serde_json::json!({
+                "kind": "types",
+                "typeIds": ["film"],
+                "tagIds": ["tag-a", "tag-b"],
+                "tagMode": "all"
+            })
+        );
+        assert_eq!(
+            recap_drafts["drafts"][0]["slots"][0]["entry"]["shortLabel"],
+            "Across stars"
+        );
+        assert_eq!(
+            recap_drafts["drafts"][0]["slots"][0]["entry"]["iconKey"],
+            "film"
+        );
+        assert_eq!(
+            recap_drafts["drafts"][0]["slots"][0]["entry"]["coverAssetId"],
+            active_cover_hash
+        );
+        assert!(target
+            .load_recap_cover(&active_cover_hash)
+            .unwrap()
+            .is_some());
         assert_eq!(library.revision, target_revision + 1);
         assert_eq!(library.entries.len(), 1);
         assert_eq!(library.entries[0].title, "Across the stars");
@@ -2528,7 +2945,7 @@ mod tests {
         );
         assert_eq!(
             library.entries[0].cover_asset_id.as_deref(),
-            Some(active_cover_hash.as_str())
+            Some(replaced_cover_hash.as_str())
         );
         assert_eq!(library.entries[0].criterion_ratings["story-quality"], 8);
         assert_eq!(library.entries[0].tag_ids, vec!["space-opera"]);

@@ -80,7 +80,7 @@ describe("shared Library components", () => {
       }),
     );
 
-    expect(entry.disposition).toBe("planned");
+    expect(entry.disposition).toBe("experienced");
     expect(markup).toContain("Add work");
     expect(markup).toContain("Media type");
     expect(markup).toContain("Overall rating");

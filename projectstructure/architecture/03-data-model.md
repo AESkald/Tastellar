@@ -72,6 +72,10 @@ Rated population N: active, nontrashed, experienced entries with a current score
 
 No stored rank numbers, percentiles, histogram bins, or eligibility booleans. Compute from queries/revision caches. Index active disposition/rating, type, release year, tag joins, group/key, and history entry/time. Search indexing is rebuildable and locale-aware; fallback substring search must still work.
 
+## Recap persistence in the current implementation
+
+Editable recap snapshots currently use a versioned, validated `recapDrafts` JSON envelope in core-owned Preferences, persisted transactionally in SQLite and included in portable archives. The envelope contains at most 30 drafts, 300 slots total, and 1 MiB of JSON. `recapWatermark` is a separate global preference, defaulting to true. Cover references are immutable asset hashes; portable archive reference collection includes these snapshots independently of the current entry cover. This is an initial storage representation of RecapComposition, not browser-local state; a dedicated table can replace the envelope without changing the v1 composition contract.
+
 ## Acceptance
 
 Reject score 0/11, invalid calendar dates, mismatched groups, dangling asset references on normal writes, and duplicate order keys. Type switching preserves inactive criterion scores. Rank queries agree across list, details, analytics, and recap for the same revision. Empty and singleton populations have no division-by-zero or fabricated percentile.

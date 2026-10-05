@@ -9,6 +9,52 @@ export interface UniversePalette {
 
 const cache = new Map<string, Promise<UniversePalette>>();
 const MAX_CACHE = 96;
+const STORAGE_KEY = "tastellar.universe.palette.v1";
+const MAX_PERSISTED = 128;
+const MAX_STORAGE_CHARS = 64 * 1024;
+const persisted = readPersistedPalettes();
+
+function isPalette(value: unknown): value is UniversePalette {
+  if (!value || typeof value !== "object") return false;
+  const palette = value as Record<string, unknown>;
+  return palette.extractionVersion === 1 &&
+    ["dominant", "vibrant", "darkVibrant", "lightVibrant", "accent"].every(
+      (key) => typeof palette[key] === "string" && (palette[key] as string).length <= 64,
+    );
+}
+
+function readPersistedPalettes(): Map<string, UniversePalette> {
+  try {
+    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(STORAGE_KEY);
+    if (!raw || raw.length > MAX_STORAGE_CHARS) return new Map();
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value)) return new Map();
+    return new Map(value
+      .filter((item): item is [string, UniversePalette] =>
+        Array.isArray(item) && item.length === 2 && typeof item[0] === "string" &&
+        item[0].length > 0 && item[0].length <= 160 && isPalette(item[1]),
+      )
+      .slice(-MAX_PERSISTED));
+  } catch {
+    return new Map();
+  }
+}
+
+function persistPalette(key: string, palette: UniversePalette) {
+  persisted.delete(key);
+  persisted.set(key, palette);
+  while (persisted.size > MAX_PERSISTED) persisted.delete(persisted.keys().next().value as string);
+  try {
+    let serialized = JSON.stringify([...persisted]);
+    while (serialized.length > MAX_STORAGE_CHARS && persisted.size > 1) {
+      persisted.delete(persisted.keys().next().value as string);
+      serialized = JSON.stringify([...persisted]);
+    }
+    if (typeof localStorage !== "undefined") localStorage.setItem(STORAGE_KEY, serialized);
+  } catch {
+    // Palette caching is optional; storage failures must not break the scene.
+  }
+}
 
 function hashSeed(value: string): number {
   let hash = 2166136261;
@@ -125,6 +171,13 @@ export function extractCoverPalette(source: string, stableSeed = source, cacheKe
   const key = cacheKey ?? sourceKey(source);
   const cached = cache.get(key);
   if (cached) return cached;
+  const persistedPalette = cacheKey ? persisted.get(key) : undefined;
+  if (persistedPalette) {
+    const result = Promise.resolve(persistedPalette);
+    cache.set(key, result);
+    while (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value as string);
+    return result;
+  }
   const result = new Promise<UniversePalette>((resolve) => {
     if (typeof document === "undefined" || typeof Image === "undefined") {
       resolve(seededPalette(stableSeed));
@@ -152,7 +205,12 @@ export function extractCoverPalette(source: string, stableSeed = source, cacheKe
   });
   cache.set(key, result);
   if (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value as string);
-  return result;
+  return cacheKey
+    ? result.then((palette) => {
+        persistPalette(key, palette);
+        return palette;
+      })
+    : result;
 }
 
 export function paletteFromSeed(seed: string): UniversePalette {
