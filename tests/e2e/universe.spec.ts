@@ -8,6 +8,129 @@ type Work = {
   score?: string;
 };
 
+type UniverseTransitionSample = {
+  elapsedMs: number;
+  labelCount: number;
+  allLabelsInert: boolean;
+  labelPresent: boolean;
+  opacity: number | null;
+  ariaHidden: string | null;
+  tabIndex: number | null;
+  pointerEvents: string | null;
+  sceneLabel: string | null;
+  cameraGroup: string | null;
+};
+
+type UniverseTransitionTrace = {
+  navigationAt: number | null;
+  samples: UniverseTransitionSample[];
+};
+
+async function startUniverseTransitionTrace(page: Page, workId: string) {
+  await page.evaluate((targetWorkId) => {
+    type Trace = {
+      startedAt: number;
+      navigationAt: number | null;
+      stopped: boolean;
+      observer: MutationObserver | null;
+      animationFrame: number | null;
+      samples: UniverseTransitionSample[];
+    };
+    const host = window as typeof window & { __universeTransitionTrace?: Trace };
+    const trace: Trace = { startedAt: performance.now(), navigationAt: null, stopped: false, observer: null, animationFrame: null, samples: [] };
+    host.__universeTransitionTrace = trace;
+    const capture = () => {
+      if (trace.stopped) return;
+      const scene = document.querySelector<HTMLElement>('[data-testid="library-universe"]');
+      if (!scene) return;
+      const labels = [...scene.querySelectorAll<HTMLElement>('[data-testid="universe-work"]')];
+      const label = labels
+        .find((candidate) => candidate.getAttribute("data-work-id") === targetWorkId || candidate.getAttribute("aria-label") === targetWorkId);
+      trace.samples.push({
+        elapsedMs: performance.now() - trace.startedAt,
+        labelCount: labels.length,
+        allLabelsInert: labels.every((candidate) =>
+          Number(candidate.getAttribute("data-label-opacity")) === 0
+          && candidate.getAttribute("aria-hidden") === "true"
+          && candidate.tabIndex === -1
+          && getComputedStyle(candidate).pointerEvents === "none"),
+        labelPresent: Boolean(label),
+        opacity: label ? Number(label.getAttribute("data-label-opacity")) : null,
+        ariaHidden: label?.getAttribute("aria-hidden") ?? null,
+        tabIndex: label?.tabIndex ?? null,
+        pointerEvents: label ? getComputedStyle(label).pointerEvents : null,
+        sceneLabel: scene.getAttribute("aria-label"),
+        cameraGroup: scene.getAttribute("data-camera-group"),
+      });
+    };
+    const frameSample = () => {
+      trace.animationFrame = null;
+      if (trace.stopped) return;
+      capture();
+      if (trace.samples.length < 2000) trace.animationFrame = requestAnimationFrame(frameSample);
+    };
+    trace.observer = new MutationObserver(capture);
+    trace.observer.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["aria-label", "aria-hidden", "class", "data-camera-group", "data-label-opacity", "data-testid", "data-work-id", "style", "tabindex"],
+    });
+    document.addEventListener("click", (event) => {
+      if ((event.target as Element | null)?.closest(".library-group-navigation button")) trace.navigationAt = performance.now() - trace.startedAt;
+    }, { capture: true, once: true });
+    capture();
+    trace.animationFrame = requestAnimationFrame(frameSample);
+  }, workId);
+}
+
+async function stopUniverseTransitionTrace(page: Page) {
+  return page.evaluate(() => {
+    const host = window as typeof window & {
+      __universeTransitionTrace?: { stopped: boolean; observer: MutationObserver | null; animationFrame: number | null; navigationAt: number | null; samples: UniverseTransitionSample[] };
+    };
+    const trace = host.__universeTransitionTrace;
+    if (!trace) throw new Error("Universe transition trace was not started");
+    trace.stopped = true;
+    trace.observer?.disconnect();
+    if (trace.animationFrame !== null) cancelAnimationFrame(trace.animationFrame);
+    trace.animationFrame = null;
+    return { navigationAt: trace.navigationAt, samples: trace.samples };
+  });
+}
+
+function expectUniverseTravelTrace(
+  trace: UniverseTransitionTrace,
+  targetGroup: string,
+  sourceGroup: string,
+  expectFadeInAfterTravel = false,
+) {
+  const targetSceneSamples = trace.samples.filter((sample) => sample.sceneLabel?.endsWith(`for ${targetGroup}`));
+  expect(targetSceneSamples.length, `observed destination scene ${targetGroup}`).toBeGreaterThan(0);
+  expect(trace.navigationAt, `observed the browser navigation click for ${sourceGroup}→${targetGroup}`).toBeTruthy();
+  const handoff = targetSceneSamples.find((sample) => sample.cameraGroup === targetGroup);
+  expect(handoff, `renderer hands the camera to group ${targetGroup}`).toBeTruthy();
+  expect(handoff!.elapsedMs).toBeGreaterThan(trace.navigationAt!);
+  const firstVisibleSample = targetSceneSamples.find((sample) => sample.opacity !== null && sample.opacity > 0);
+  const travelEndAt = firstVisibleSample?.elapsedMs ?? handoff!.elapsedMs;
+  const travelSamples = targetSceneSamples.filter((sample) => sample.elapsedMs < travelEndAt);
+  expect(travelSamples.length, `captured destination scene during ${sourceGroup}→${targetGroup} travel`).toBeGreaterThan(0);
+  for (const sample of travelSamples) {
+    expect(sample.labelCount === 0 || sample.allLabelsInert, "titles are absent or transparent and inert during scale travel").toBe(true);
+    if (sample.labelPresent) {
+      expect(sample.opacity).toBe(0);
+      expect(sample.ariaHidden).toBe("true");
+      expect(sample.tabIndex).toBe(-1);
+      expect(sample.pointerEvents).toBe("none");
+    }
+  }
+  expect(travelSamples.some((sample) => sample.cameraGroup === sourceGroup)).toBe(true);
+  if (expectFadeInAfterTravel) {
+    expect(firstVisibleSample, `destination labels fade in after ${sourceGroup}→${targetGroup} travel`).toBeTruthy();
+    expect(firstVisibleSample!.elapsedMs - trace.navigationAt!).toBeGreaterThanOrEqual(850);
+  }
+}
+
 function decodePng(png: Buffer) {
   let offset = 8;
   let width = 0;
@@ -256,20 +379,13 @@ test("the four high-score scenes navigate directly and scene selection opens det
   const canvasBox = await scene.locator(".universe-canvas-wrap").boundingBox();
   if (!switcherBox || !canvasBox) throw new Error("Tier switch and scene stage should be measurable");
   expect(switcherBox.y + switcherBox.height).toBeLessThanOrEqual(canvasBox.y);
-  const transitionStartedAt = Date.now();
+  await startUniverseTransitionTrace(page, "Constellation favorite");
   await switcher.getByRole("button", { name: "Next group", exact: true }).click();
   await expect(scene).toHaveAttribute("aria-label", `${names["9"]} scene for 9`);
-  await page.waitForTimeout(Math.max(0, 300 - (Date.now() - transitionStartedAt)));
-  await expect(scene.locator('[data-testid="universe-work"][data-label-opacity="1"]')).toHaveCount(0);
-  await page.waitForTimeout(Math.max(0, 650 - (Date.now() - transitionStartedAt)));
-  const travelLabel = scene.getByTestId("universe-work").first();
-  await expect(travelLabel).toHaveAttribute("data-label-opacity", "0");
-  await expect(travelLabel).toHaveClass(/transition-hidden/);
-  await expect.poll(async () => Number(await travelLabel.getAttribute("data-label-opacity")), { timeout: 1000, intervals: [16, 16, 32] }).toBeGreaterThan(0);
-  await expect(travelLabel).not.toHaveClass(/transition-hidden/);
-  const firstFadeOpacity = Number(await travelLabel.getAttribute("data-label-opacity"));
-  expect(firstFadeOpacity).toBeLessThan(0.95);
-  await expect.poll(async () => Number(await travelLabel.getAttribute("data-label-opacity")), { timeout: 2500 }).toBeGreaterThan(0.9);
+  const travelLabel = scene.locator('[data-testid="universe-work"][aria-label="Constellation favorite"]');
+  await expect.poll(async () => Number(await travelLabel.getAttribute("data-label-opacity")), { timeout: 3000, intervals: [16, 32, 64] }).toBeGreaterThan(0.9);
+  const directTransitionTrace = await stopUniverseTransitionTrace(page);
+  expectUniverseTravelTrace(directTransitionTrace, "9", "10", true);
   await openGroup(page, "9");
   await expect(scene.getByRole("button", { name: "Constellation favorite", exact: true })).toBeVisible();
   await scene.getByRole("button", { name: "Constellation favorite", exact: true }).click();
@@ -282,35 +398,47 @@ test("the 7↔8 scale transition hides titles for the full travel", async ({ pag
   await openGroup(page, "8");
   const scene = page.getByTestId("library-universe");
   await expect(scene).toHaveAttribute("data-motion-enabled", "true");
-  await page.waitForTimeout(1000);
-  const firstTransitionStartedAt = Date.now();
-  await page.locator(".library-list-toolbar .library-group-navigation").getByRole("button", { name: "Next group", exact: true }).click();
-  await expect(scene).toHaveAttribute("aria-label", /Deep field scene for 7$/);
-  await page.waitForTimeout(Math.max(0, 650 - (Date.now() - firstTransitionStartedAt)));
-  await expect(scene.getByTestId("universe-work")).toHaveCount(124);
-  const deepLabel = scene.getByTestId("universe-work").first();
-  await expect(deepLabel).toHaveAttribute("data-label-opacity", "0");
-  await expect(deepLabel).toHaveClass(/transition-hidden/);
-  await expect.poll(async () => Number(await deepLabel.getAttribute("data-label-opacity")), { timeout: 1000, intervals: [16, 16, 32] }).toBeGreaterThan(0);
-  await expect(deepLabel).not.toHaveClass(/transition-hidden/);
-  await expect.poll(async () => Number(await deepLabel.getAttribute("data-label-opacity")), { timeout: 2500 }).toBe(1);
-  await expect(scene).toHaveAttribute("data-camera-yaw", "0");
-  await expect(scene).toHaveAttribute("data-camera-pitch", "0");
-
-  const reverseTransitionStartedAt = Date.now();
-  await page.locator(".library-list-toolbar .library-group-navigation").getByRole("button", { name: "Previous group", exact: true }).click();
-  await expect(scene).toHaveAttribute("aria-label", /Spiral galaxy scene for 8$/);
-  await page.waitForTimeout(Math.max(0, 650 - (Date.now() - reverseTransitionStartedAt)));
-  const galaxyLabel = scene.getByTestId("universe-work").first();
-  await expect(galaxyLabel).toHaveAttribute("data-label-opacity", "0");
-  await page.waitForTimeout(Math.max(0, 950 - (Date.now() - reverseTransitionStartedAt)));
   await expect(scene).toHaveAttribute("data-camera-group", "8");
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  try {
+    const groupNavigation = page.locator(".library-list-toolbar .library-group-navigation");
+    await startUniverseTransitionTrace(page, "synthetic-universe-7-1");
+    await groupNavigation.getByRole("button", { name: "Next group", exact: true }).click();
+    await expect(scene).toHaveAttribute("aria-label", /Deep field scene for 7$/);
+    const deepLabel = scene.locator('[data-testid="universe-work"][data-work-id="synthetic-universe-7-1"]');
+    await expect(scene).toHaveAttribute("data-camera-group", "7", { timeout: 5000 });
+    await expect.poll(async () => Number(await deepLabel.getAttribute("data-label-opacity")), { timeout: 5000 }).toBeGreaterThan(0.99);
+    const forwardTrace = await stopUniverseTransitionTrace(page);
+    expectUniverseTravelTrace(forwardTrace, "7", "8", true);
+    await expect(scene).toHaveAttribute("data-camera-yaw", "0");
+    await expect(scene).toHaveAttribute("data-camera-pitch", "0");
+
+    await startUniverseTransitionTrace(page, "synthetic-universe-8-1");
+    await groupNavigation.getByRole("button", { name: "Previous group", exact: true }).click();
+    await expect(scene).toHaveAttribute("aria-label", /Spiral galaxy scene for 8$/);
+    await expect(scene).toHaveAttribute("data-camera-group", "8", { timeout: 5000 });
+    const reverseTrace = await stopUniverseTransitionTrace(page);
+    expectUniverseTravelTrace(reverseTrace, "8", "7");
+  } finally {
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await cdp.detach();
+  }
+
   const canvas = scene.locator("canvas");
+  const galaxyLabel = scene.locator('[data-testid="universe-work"][data-work-id="synthetic-universe-8-1"]');
+  await expect(galaxyLabel).toHaveAttribute("data-label-opacity", "0");
   await canvas.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -600, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
   });
   await expect.poll(async () => Number(await galaxyLabel.getAttribute("data-label-opacity")), { timeout: 1500 }).toBeGreaterThan(0.9);
+  await canvas.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 6000, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }));
+  });
+  await expect(galaxyLabel).toHaveAttribute("data-label-opacity", "0");
 });
 
 test("the highest-ranked solar work remains selectable through sun rendering and rotation", async ({ page }) => {
