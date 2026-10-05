@@ -29,6 +29,10 @@ import {
 } from "lucide-react";
 import * as bridge from "../shared/bridge/client";
 import {
+  announceCatalogCapabilitiesChanged,
+  catalogCapabilities,
+} from "../shared/bridge/catalogBridge";
+import {
   type HomeState,
   type HomePatch,
   type Preferences,
@@ -810,6 +814,11 @@ export function App() {
           // remove staged managed files. Rehydrate so no stale in-memory data
           // can be shown or written back, then surface the localized warning.
           await initialize();
+          try {
+            announceCatalogCapabilitiesChanged(await catalogCapabilities());
+          } catch {
+            // Keep the committed reset visible if provider status cannot refresh.
+          }
           libraryViews.current = {};
           setSaveError(bridge.errorMessage(cause));
           return;
@@ -827,6 +836,11 @@ export function App() {
         setSaveError("");
         setChooser(false);
         libraryViews.current = {};
+        try {
+          announceCatalogCapabilitiesChanged(await catalogCapabilities());
+        } catch {
+          // Keep the reset committed if provider status cannot refresh.
+        }
       });
     queue.current = result;
     await result;
@@ -1046,6 +1060,11 @@ export function App() {
     setWorkspace(ws);
     setDetailsWidth(Math.max(240, Math.min(440, ws.detailsWidth)));
     await refreshLibrary();
+    try {
+      announceCatalogCapabilitiesChanged(await catalogCapabilities());
+    } catch {
+      // Archive restore is complete; open catalog panels can retry their status refresh.
+    }
   };
   const uploadAvatar = async (file: File) => {
     if (!["image/png", "image/jpeg", "image/webp"].includes(file.type))

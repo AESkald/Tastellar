@@ -9,8 +9,22 @@ import type {
 
 const native = isTauri();
 
+export const CATALOG_CAPABILITIES_CHANGED_EVENT =
+  "tastellar:catalog-capabilities-changed";
+
+/** Notify open catalog and export panels after credentials change or an archive restore. */
+export function announceCatalogCapabilitiesChanged(
+  capabilities: CatalogCapability[],
+): void {
+  window.dispatchEvent(
+    new CustomEvent<CatalogCapability[]>(CATALOG_CAPABILITIES_CHANGED_EVENT, {
+      detail: capabilities,
+    }),
+  );
+}
+
 /**
- * Provider credentials are sent only to the desktop's in-memory Rust session.
+ * Provider credentials are sent only to the desktop's native credential store.
  * This bridge deliberately has no browser-preview/localStorage fallback.
  */
 export function configureProviderCredentials(

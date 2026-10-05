@@ -152,20 +152,24 @@ pub struct SearchCatalogResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderCredentialInput {
     pub provider: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steam_id64: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub clear: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,7 +204,7 @@ enum ProviderCredentials {
     },
     Steam {
         api_key: String,
-        steam_id64: String,
+        steam_id64: Option<String>,
     },
     Igdb {
         client_id: String,
@@ -222,32 +226,50 @@ pub struct CatalogCoverDownload {
 }
 
 impl ProviderSession {
-    /// Load app-owned provider credentials embedded by the local desktop build.
-    /// The input file is never returned or logged; only validated credentials
-    /// are kept in process memory.
-    pub fn from_private_config_json(value: &str) -> Result<Self, StorageError> {
-        let inputs: Vec<ProviderCredentialInput> = serde_json::from_str(value).map_err(|_| {
-            StorageError::Validation("Private provider configuration is invalid".into())
-        })?;
+    /// Load validated credentials read from the local provider-credential table.
+    /// Secret values are never returned by the desktop command API.
+    pub fn from_saved_credentials(
+        inputs: Vec<ProviderCredentialInput>,
+    ) -> Result<Self, StorageError> {
         if inputs.len() > 8 {
             return Err(StorageError::Validation(
-                "Private provider configuration is invalid".into(),
+                "Saved provider credentials are invalid".into(),
             ));
         }
         let session = Self::default();
         let mut providers = std::collections::HashSet::new();
         for input in inputs {
             let provider = CatalogProvider::parse(&input.provider).ok_or_else(|| {
-                StorageError::Validation("Private provider configuration is invalid".into())
+                StorageError::Validation("Saved provider credentials are invalid".into())
             })?;
+            if input.provider != provider.key() || input.clear {
+                return Err(StorageError::Validation(
+                    "Saved provider credentials are invalid".into(),
+                ));
+            }
             if !providers.insert(provider) {
                 return Err(StorageError::Validation(
-                    "Private provider configuration is invalid".into(),
+                    "Saved provider credentials are invalid".into(),
                 ));
             }
             configure_provider_credentials(&session, input)?;
         }
         Ok(session)
+    }
+
+    /// Atomically replace live credentials after a validated archive restore/reset.
+    pub fn replace_saved_credentials(
+        &self,
+        inputs: Vec<ProviderCredentialInput>,
+    ) -> Result<(), StorageError> {
+        let replacement = Self::from_saved_credentials(inputs)?;
+        let credentials = replacement.credentials.into_inner().map_err(|_| {
+            StorageError::Validation("Provider session state is unavailable".into())
+        })?;
+        *self.credentials.lock().map_err(|_| {
+            StorageError::Validation("Provider session state is unavailable".into())
+        })? = credentials;
+        Ok(())
     }
 
     fn snapshot(
@@ -269,7 +291,7 @@ impl ProviderSession {
                 steam_id64,
             } => CredentialSnapshot {
                 api_key: Some(api_key.clone()),
-                steam_id64: Some(steam_id64.clone()),
+                steam_id64: steam_id64.clone(),
                 client_id: None,
                 client_secret: None,
             },
@@ -305,7 +327,7 @@ impl ProviderSession {
                 ),
                 _ => {
                     return Err(StorageError::Validation(
-                        "IGDB credentials are not configured in this app".into(),
+                        "Add your IGDB client ID and secret in API settings".into(),
                     ))
                 }
             }
@@ -345,16 +367,24 @@ pub fn configure_provider_credentials(
 ) -> Result<ProviderCredentialState, StorageError> {
     let provider = CatalogProvider::parse(&input.provider)
         .ok_or_else(|| StorageError::Validation("Unsupported catalog provider".into()))?;
-    let mut guard = session
-        .credentials
-        .lock()
-        .map_err(|_| StorageError::Validation("Provider session state is unavailable".into()))?;
     if input.clear {
+        if input.api_key.is_some()
+            || input.steam_id64.is_some()
+            || input.client_id.is_some()
+            || input.client_secret.is_some()
+        {
+            return Err(StorageError::Validation(
+                "Clearing provider credentials cannot include credential values".into(),
+            ));
+        }
+        let mut guard = session.credentials.lock().map_err(|_| {
+            StorageError::Validation("Provider session state is unavailable".into())
+        })?;
         guard.remove(&provider);
         return Ok(ProviderCredentialState {
             provider: provider.key().into(),
             configured: matches!(provider, CatalogProvider::OpenLibrary),
-            session_only: true,
+            session_only: false,
         });
     }
 
@@ -366,7 +396,11 @@ pub fn configure_provider_credentials(
     };
     let credentials = match provider {
         CatalogProvider::Tmdb | CatalogProvider::GoogleBooks => {
-            if invalid_secret(input.api_key.as_ref()) {
+            if invalid_secret(input.api_key.as_ref())
+                || input.steam_id64.is_some()
+                || input.client_id.is_some()
+                || input.client_secret.is_some()
+            {
                 return Err(StorageError::Validation(
                     "Enter a valid provider API key".into(),
                 ));
@@ -376,18 +410,20 @@ pub fn configure_provider_credentials(
             }
         }
         CatalogProvider::Steam => {
-            if invalid_secret(input.api_key.as_ref()) {
+            if invalid_secret(input.api_key.as_ref())
+                || input.client_id.is_some()
+                || input.client_secret.is_some()
+            {
                 return Err(StorageError::Validation(
                     "Enter a valid Steam Web API key".into(),
                 ));
             }
-            let steam_id = input
-                .steam_id64
-                .as_deref()
-                .and_then(normalize_steam_id)
-                .ok_or_else(|| {
+            let steam_id = match input.steam_id64.as_deref() {
+                Some(value) => Some(normalize_steam_id(value).ok_or_else(|| {
                     StorageError::Validation("Enter a SteamID64 or public profile URL".into())
-                })?;
+                })?),
+                None => None,
+            };
             ProviderCredentials::Steam {
                 api_key: input.api_key.unwrap().trim().to_string(),
                 steam_id64: steam_id,
@@ -396,6 +432,8 @@ pub fn configure_provider_credentials(
         CatalogProvider::Igdb => {
             if invalid_secret(input.client_id.as_ref())
                 || invalid_secret(input.client_secret.as_ref())
+                || input.api_key.is_some()
+                || input.steam_id64.is_some()
             {
                 return Err(StorageError::Validation(
                     "Enter a valid IGDB client ID and client secret".into(),
@@ -413,11 +451,15 @@ pub fn configure_provider_credentials(
             ));
         }
     };
+    let mut guard = session
+        .credentials
+        .lock()
+        .map_err(|_| StorageError::Validation("Provider session state is unavailable".into()))?;
     guard.insert(provider, credentials);
     Ok(ProviderCredentialState {
         provider: provider.key().into(),
         configured: true,
-        session_only: true,
+        session_only: false,
     })
 }
 
@@ -433,7 +475,7 @@ pub fn catalog_capabilities(session: &ProviderSession) -> Vec<CatalogCapability>
             label: "TMDb".into(),
             enabled: tmdb,
             configured: tmdb,
-            reason: (!tmdb).then(|| "TMDb is unavailable in this app build.".into()),
+            reason: (!tmdb).then(|| "Add your TMDb API key in API settings.".into()),
             media_type_ids: vec!["films".into(), "tv-series".into(), "anime".into()],
             terms_url: Some("https://www.themoviedb.org/api-terms-of-use".into()),
             attribution_text: Some(TMDB_ATTRIBUTION.into()),
@@ -453,7 +495,7 @@ pub fn catalog_capabilities(session: &ProviderSession) -> Vec<CatalogCapability>
             label: "Google Books".into(),
             enabled: google,
             configured: google,
-            reason: (!google).then(|| "Google Books is unavailable in this app build.".into()),
+            reason: (!google).then(|| "Add your Google Books API key in API settings.".into()),
             media_type_ids: vec!["literature".into(), "comic".into()],
             terms_url: Some("https://developers.google.com/books/terms".into()),
             attribution_text: Some("Google Books".into()),
@@ -463,7 +505,7 @@ pub fn catalog_capabilities(session: &ProviderSession) -> Vec<CatalogCapability>
             label: "IGDB".into(),
             enabled: igdb,
             configured: igdb,
-            reason: (!igdb).then(|| "IGDB is unavailable in this app build.".into()),
+            reason: (!igdb).then(|| "Add your IGDB client ID and secret in API settings.".into()),
             media_type_ids: vec!["games".into()],
             terms_url: Some("https://api-docs.igdb.com/".into()),
             attribution_text: Some("Data from IGDB".into()),
@@ -473,7 +515,11 @@ pub fn catalog_capabilities(session: &ProviderSession) -> Vec<CatalogCapability>
             label: "Steam".into(),
             enabled: false,
             configured: steam,
-            reason: Some("Steam owned-games import is supported separately.".into()),
+            reason: Some(if steam {
+                "Steam is available for owned-games import.".into()
+            } else {
+                "Add your Steam Web API key in API settings for owned-games import.".into()
+            }),
             media_type_ids: vec!["games".into()],
             terms_url: Some("https://steamcommunity.com/dev/apiterms".into()),
             attribution_text: Some("Steam".into()),
@@ -1058,7 +1104,9 @@ fn safe_steam_cover_path(path: &str) -> bool {
     {
         return false;
     }
-    if assets.len() == 2 && (assets[0].len() != 40 || !assets[0].bytes().all(|byte| byte.is_ascii_hexdigit())) {
+    if assets.len() == 2
+        && (assets[0].len() != 40 || !assets[0].bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
         return false;
     }
     let file = assets[assets.len() - 1];
@@ -1589,12 +1637,12 @@ fn search_tmdb(
     input: &SearchCatalogInput,
     page: u32,
 ) -> Result<(Vec<CatalogCandidate>, Option<u32>), StorageError> {
-    let credentials = session.snapshot(CatalogProvider::Tmdb)?.ok_or_else(|| {
-        StorageError::Validation("TMDb API token is not configured in this app".into())
-    })?;
-    let token = credentials.api_key.ok_or_else(|| {
-        StorageError::Validation("TMDb API token is not configured in this app".into())
-    })?;
+    let credentials = session
+        .snapshot(CatalogProvider::Tmdb)?
+        .ok_or_else(|| StorageError::Validation("Add your TMDb API key in API settings".into()))?;
+    let token = credentials
+        .api_key
+        .ok_or_else(|| StorageError::Validation("Add your TMDb API key in API settings".into()))?;
     let selected = input.media_type_id.as_deref();
     let mut query_types = Vec::new();
     if input.external_id.is_some() {
@@ -1780,10 +1828,10 @@ fn search_google_books(
     let credentials = session
         .snapshot(CatalogProvider::GoogleBooks)?
         .ok_or_else(|| {
-            StorageError::Validation("Google Books API key is not configured in this app".into())
+            StorageError::Validation("Add your Google Books API key in API settings".into())
         })?;
     let api_key = credentials.api_key.ok_or_else(|| {
-        StorageError::Validation("Google Books API key is not configured in this app".into())
+        StorageError::Validation("Add your Google Books API key in API settings".into())
     })?;
     let start_index = (page - 1).saturating_mul(MAX_PAGE_SIZE);
     let query = input.external_id.as_deref().unwrap_or(input.query.trim());
@@ -1877,7 +1925,7 @@ fn search_igdb(
 ) -> Result<(Vec<CatalogCandidate>, Option<u32>), StorageError> {
     let token = session.igdb_token(client)?;
     let snapshot = session.snapshot(CatalogProvider::Igdb)?.ok_or_else(|| {
-        StorageError::Validation("IGDB credentials are not configured in this app".into())
+        StorageError::Validation("Add your IGDB client ID and secret in API settings".into())
     })?;
     let client_id = snapshot
         .client_id
@@ -2064,16 +2112,18 @@ pub fn steam_owned_games(
     input: &crate::import::SteamImportOptions,
 ) -> Result<Vec<SteamOwnedGame>, StorageError> {
     let credentials = session.snapshot(CatalogProvider::Steam)?.ok_or_else(|| {
-        StorageError::Validation("Steam credentials are not configured in this app.".into())
+        StorageError::Validation("Add your Steam Web API key in API settings.".into())
     })?;
     let api_key = credentials.api_key.ok_or_else(|| {
-        StorageError::Validation("Steam credentials are not configured in this app.".into())
-    })?;
-    let configured_id = credentials.steam_id64.ok_or_else(|| {
-        StorageError::Validation("Steam profile is not configured in this app.".into())
+        StorageError::Validation("Add your Steam Web API key in API settings.".into())
     })?;
     let profile = if input.steam_id.trim().is_empty() {
-        SteamProfileIdentifier::SteamId64(configured_id)
+        SteamProfileIdentifier::SteamId64(credentials.steam_id64.ok_or_else(|| {
+            StorageError::Validation(
+                "Enter a Steam profile ID for this import or save a default Steam profile in API settings."
+                    .into(),
+            )
+        })?)
     } else {
         parse_steam_profile_identifier(&input.steam_id).ok_or_else(|| {
             StorageError::Validation(
@@ -2172,7 +2222,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_credentials_are_session_only_and_never_echoed() {
+    fn provider_credentials_are_configured_without_echoing_values() {
         let session = ProviderSession::default();
         let configured = configure_provider_credentials(
             &session,
@@ -2187,7 +2237,7 @@ mod tests {
         )
         .unwrap();
         assert!(configured.configured);
-        assert!(configured.session_only);
+        assert!(!configured.session_only);
         let serialized = serde_json::to_string(&configured).unwrap();
         assert!(!serialized.contains("fixture-token-never-return-this"));
         let tmdb = catalog_capabilities(&session)
@@ -2215,6 +2265,110 @@ mod tests {
                 .find(|capability| capability.provider == "tmdb")
                 .unwrap()
                 .enabled
+        );
+    }
+
+    #[test]
+    fn steam_api_key_can_be_saved_without_a_default_profile() {
+        let session = ProviderSession::default();
+        let state = configure_provider_credentials(
+            &session,
+            ProviderCredentialInput {
+                provider: "steam".into(),
+                api_key: Some("synthetic-steam-key-123".into()),
+                steam_id64: None,
+                client_id: None,
+                client_secret: None,
+                clear: false,
+            },
+        )
+        .unwrap();
+        assert!(state.configured);
+        assert!(
+            catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "steam")
+                .unwrap()
+                .configured
+        );
+    }
+
+    #[test]
+    fn provider_credentials_reject_unknown_providers_and_mixed_payloads() {
+        let session = ProviderSession::default();
+        let unknown = configure_provider_credentials(
+            &session,
+            ProviderCredentialInput {
+                provider: "unknown".into(),
+                api_key: Some("synthetic-key-123".into()),
+                steam_id64: None,
+                client_id: None,
+                client_secret: None,
+                clear: false,
+            },
+        );
+        assert!(unknown.is_err());
+
+        let mixed = configure_provider_credentials(
+            &session,
+            ProviderCredentialInput {
+                provider: "tmdb".into(),
+                api_key: Some("synthetic-key-123".into()),
+                steam_id64: Some("76561198000000001".into()),
+                client_id: None,
+                client_secret: None,
+                clear: false,
+            },
+        );
+        assert!(mixed.is_err());
+        assert!(
+            !catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "tmdb")
+                .unwrap()
+                .configured
+        );
+
+        let bad_clear = configure_provider_credentials(
+            &session,
+            ProviderCredentialInput {
+                provider: "tmdb".into(),
+                api_key: Some("synthetic-key-123".into()),
+                steam_id64: None,
+                client_id: None,
+                client_secret: None,
+                clear: true,
+            },
+        );
+        assert!(bad_clear.is_err());
+    }
+
+    #[test]
+    fn replacing_saved_credentials_refreshes_configured_status() {
+        let session = ProviderSession::from_saved_credentials(vec![ProviderCredentialInput {
+            provider: "igdb".into(),
+            api_key: None,
+            steam_id64: None,
+            client_id: Some("synthetic-client-id-123".into()),
+            client_secret: Some("synthetic-client-secret-123".into()),
+            clear: false,
+        }])
+        .unwrap();
+        assert!(
+            catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "igdb")
+                .unwrap()
+                .configured
+        );
+
+        session.replace_saved_credentials(Vec::new()).unwrap();
+        assert!(
+            !catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "igdb")
+                .unwrap()
+                .configured
         );
     }
 
@@ -2720,13 +2874,11 @@ mod tests {
             );
         }
 
-        assert!(
-            trusted_cover_url(
-                CatalogProvider::Steam,
-                "https://cdn.akamai.steamstatic.com/steam/apps/42/library_600x900_2x.jpg"
-            )
-            .is_some()
-        );
+        assert!(trusted_cover_url(
+            CatalogProvider::Steam,
+            "https://cdn.akamai.steamstatic.com/steam/apps/42/library_600x900_2x.jpg"
+        )
+        .is_some());
         assert!(trusted_cover_url(
             CatalogProvider::Steam,
             "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/42/header.jpg?t=1234567890"

@@ -20,6 +20,7 @@ import type { CatalogSearchResult } from "../../shared/bridge/catalogTypes";
 import { searchCatalog } from "../../shared/bridge/catalogBridge";
 import { preferredCatalogProvider, rememberCatalogProvider } from "../../shared/bridge/catalogPreferences";
 import { CatalogSearchPanel } from "./CatalogSearchPanel";
+import { ProviderCredentials } from "./ProviderCredentials";
 import {
   IMPORT_CONTRACT_VERSION,
   type ImportCommitInput,
@@ -257,11 +258,13 @@ function formatBytes(bytes: number) {
 export function ImportWizard({
   state,
   capabilities,
+  onCapabilitiesChange,
   onClose,
   onCommitLibrary,
 }: {
   state: LibraryState;
   capabilities: CatalogCapability[];
+  onCapabilitiesChange?: (capabilities: CatalogCapability[]) => void;
   onClose: () => void;
   onCommitLibrary: (library: LibraryState) => Promise<void>;
 }) {
@@ -283,6 +286,7 @@ export function ImportWizard({
   const [steamId, setSteamId] = useState("");
   const [includePlayedFreeGames, setIncludePlayedFreeGames] = useState(false);
   const [providerCaps, setProviderCaps] = useState(capabilities);
+  useEffect(() => setProviderCaps(capabilities), [capabilities]);
   const [commitResult, setCommitResult] = useState<ImportCommitResult | null>(null);
   const [coverRetryErrors, setCoverRetryErrors] = useState<Record<string, string>>({});
   const [undoDone, setUndoDone] = useState(false);
@@ -323,12 +327,21 @@ export function ImportWizard({
     return rated.length > 1 && rated.every((row) => comparableDateValue(row) !== null);
   });
   const steamCapability = providerCaps.find((item) => item.provider === "steam");
+  const steamCredentialsSaved = Boolean(steamCapability?.configured);
   const lookupProviders = providerCaps.filter((item) => item.enabled && item.provider !== "steam");
   const [bulkProvider, setBulkProvider] = useState<string>(() => preferredCatalogProvider(capabilities));
   const [bulkStatus, setBulkStatus] = useState("");
   const lookupCancelled = useRef(false);
   useEffect(() => () => { lookupCancelled.current = true; }, []);
   const selectedLookupProvider = bulkProvider || preferredCatalogProvider(providerCaps);
+  const importApiSettingsProvider = (() => {
+    const capability = providerCaps.find(
+      (item) => item.provider === selectedLookupProvider && item.configured,
+    );
+    return capability && capability.provider !== "steam" && capability.provider !== "openLibrary"
+      ? capability.provider
+      : "tmdb";
+  })();
   useEffect(() => {
     const nextProvider = preferredCatalogProvider(providerCaps, null, bulkProvider);
     if (nextProvider !== bulkProvider) {
@@ -841,7 +854,21 @@ export function ImportWizard({
               {!undoDone && !commitResult.batchId.startsWith("preview-") && <p className="field-hint">{t("library.import.undoHint")}</p>}
             </div>
           ) : <>
-          <div className="import-step-heading"><h3>{stepTitle}</h3>{preview && <span>{t("library.import.reviewCounts", { works: doneCount, rows: rows.length, skipped: skippedCount })}</span>}</div>
+          <div className="import-step-heading">
+            <h3>{stepTitle}</h3>
+            {preview && <span>{t("library.import.reviewCounts", { works: doneCount, rows: rows.length, skipped: skippedCount })}</span>}
+            {(step === "sources" || step === "matches") && (
+              <ProviderCredentials
+                capabilities={providerCaps}
+                onCapabilitiesChange={(next) => {
+                  setProviderCaps(next);
+                  onCapabilitiesChange?.(next);
+                }}
+                initialProvider={importApiSettingsProvider}
+                buttonTestId="import-provider-api-settings"
+              />
+            )}
+          </div>
           {step === "sources" && (
             <div className="import-source-step">
               <p className="import-step-copy">{t("library.import.sourcesIntro")}</p>
@@ -854,13 +881,28 @@ export function ImportWizard({
               {uploads.length > 0 && <div className="import-selected-files">
                 {uploads.map(({ id, upload }) => <div key={id}><span>{providerLabel(upload.provider)} · {upload.fileName}</span><button type="button" aria-label={t("library.import.removeFile", { name: upload.fileName })} onClick={() => setUploads((current) => current.filter((item) => item.id !== id))}><X size={13} /></button></div>)}
               </div>}
-              {steamCapability && (
-                <section className="import-steam-setup">
-                  <div><strong>{t("library.import.steamTitle")}</strong><small>{t("library.import.steamDisclosure")}</small></div>
-                  <label className="field"><span>{t("library.import.steamId")}</span><input value={steamId} onChange={(event) => setSteamId(event.target.value)} placeholder={t("library.import.steamIdHint")} /></label>
-                  <label className="import-checkbox"><input type="checkbox" checked={includePlayedFreeGames} onChange={(event) => setIncludePlayedFreeGames(event.target.checked)} />{t("library.import.includeFreeGames")}</label>
-                </section>
-              )}
+              <section className="import-steam-setup">
+                <div>
+                  <strong>{t("library.import.steamTitle")}</strong>
+                  <small>{t("library.import.steamDisclosure")}</small>
+                  <div className="import-steam-api-row">
+                    <small className={steamCredentialsSaved ? "configured" : "unconfigured"}>
+                      {t(steamCredentialsSaved ? "library.catalog.credentialsSaved" : "library.import.steamKeyNeeded")}
+                    </small>
+                    <ProviderCredentials
+                      capabilities={providerCaps}
+                      onCapabilitiesChange={(next) => {
+                        setProviderCaps(next);
+                        onCapabilitiesChange?.(next);
+                      }}
+                      initialProvider="steam"
+                      buttonStyle="secondary"
+                    />
+                  </div>
+                </div>
+                <label className="field"><span>{t("library.import.steamId")}</span><input value={steamId} onChange={(event) => setSteamId(event.target.value)} placeholder={t("library.import.steamIdHint")} /></label>
+                <label className="import-checkbox"><input type="checkbox" checked={includePlayedFreeGames} onChange={(event) => setIncludePlayedFreeGames(event.target.checked)} />{t("library.import.includeFreeGames")}</label>
+              </section>
               {preview?.warnings.map((warning) => <p key={warning} className="import-warning"><AlertTriangle size={14} />{warning}</p>)}
             </div>
           )}
@@ -1112,6 +1154,10 @@ export function ImportWizard({
           initialExternalIdProvider={catalogLookup?.provider ?? null}
           initialMediaTypeId={plans[catalogRow.rowId]?.mediaTypeId ?? null}
           capabilities={providerCaps}
+          onCapabilitiesChange={(next) => {
+            setProviderCaps(next);
+            onCapabilitiesChange?.(next);
+          }}
           onSelect={(result) => selectCatalogMatch(catalogRow, result)}
         />
       </div>

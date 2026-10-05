@@ -31,7 +31,10 @@ import {
 } from "./LibraryEntryEditor";
 import { SelectControl } from "../../shared/ui/SelectControl";
 import { batchUpdateEntries, peekEntryCover } from "../../shared/bridge/libraryBridge";
-import { catalogCapabilities } from "../../shared/bridge/catalogBridge";
+import {
+  CATALOG_CAPABILITIES_CHANGED_EVENT,
+  catalogCapabilities,
+} from "../../shared/bridge/catalogBridge";
 import type { CatalogCapability } from "../../shared/bridge/catalogTypes";
 import { errorMessage } from "../../shared/bridge/client";
 import "./library.css";
@@ -268,10 +271,26 @@ export function Library({
     state.entries.find((entry) => entry.id === selectedEntryId) ?? null;
   useEffect(() => {
     let cancelled = false;
-    void catalogCapabilities()
-      .then((capabilities) => { if (!cancelled) setCatalogProviders(capabilities); })
-      .catch(() => { if (!cancelled) setCatalogProviders([]); });
-    return () => { cancelled = true; };
+    const refreshCapabilities = () => {
+      void catalogCapabilities()
+        .then((capabilities) => {
+          if (!cancelled) setCatalogProviders(capabilities);
+        })
+        .catch(() => {
+          if (!cancelled) setCatalogProviders([]);
+        });
+    };
+    const handleCapabilitiesChanged = (event: Event) => {
+      const changed = (event as CustomEvent<CatalogCapability[]>).detail;
+      if (Array.isArray(changed)) setCatalogProviders(changed);
+      else refreshCapabilities();
+    };
+    refreshCapabilities();
+    window.addEventListener(CATALOG_CAPABILITIES_CHANGED_EVENT, handleCapabilitiesChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CATALOG_CAPABILITIES_CHANGED_EVENT, handleCapabilitiesChanged);
+    };
   }, []);
   const rankIndex = useMemo(
     () => buildLibraryRankIndex(state.entries, rankingTiers),
@@ -1309,6 +1328,7 @@ export function Library({
         <ImportWizard
           state={state}
           capabilities={catalogProviders}
+          onCapabilitiesChange={setCatalogProviders}
           onClose={() => setImportWizardOpen(false)}
           onCommitLibrary={async (library) => {
             const nextState = await onLibraryMutation(async () => library);

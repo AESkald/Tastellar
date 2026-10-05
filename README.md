@@ -37,7 +37,7 @@ Open `http://127.0.0.1:1420`. The preview is clearly labeled and keeps changes i
 - Locally generated, configurable recommendation prompt with preview, inclusion controls and clipboard copy.
 - Multiple independent tabs, configurable tab shortcuts, navigation rail, collapsible group sidebar shells and resizable details panel shell.
 - System, Daylight, Midnight, Dusk and Forest themes, text sizing, reduced motion, startup and restore-tab settings.
-- Portable `.tastellar.json` archives for profile and workspace data, stories, ratings, media types, criteria, tags, history, trash, and original covers/avatar; validation and an automatic recovery archive before restore.
+- Portable `.tastellar.json` archives for profile and workspace data, stories, ratings, media types, criteria, tags, history, trash, original covers/avatar, and saved provider API credentials; validation and an automatic recovery archive before restore. Version 4 archives contain configured keys as plain text.
 
 There are no sample works or invented stats. Mobile targets, media editors, merge import, and graphics scenes are not implemented in this slice. Archive size limits and the current JSON format are documented in [data durability](projectstructure/architecture/12-data-safety.md).
 

@@ -73,6 +73,11 @@
   font-size: 0.59rem;
   font-variant-numeric: tabular-nums;
 }
+.import-step-heading > .provider-api-settings-trigger {
+  margin-left: auto;
+  padding: 3px 0;
+  font-size: 0.61rem;
+}
 .import-step-copy {
   max-width: 700px;
   margin: 0 0 13px;
@@ -215,6 +220,24 @@
   color: var(--dim);
   font-size: 0.58rem;
   line-height: 1.5;
+}
+.import-steam-api-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 5px;
+}
+.import-steam-api-row small {
+  color: var(--dim);
+  font-size: 0.58rem;
+}
+.import-steam-setup > div:first-child .import-steam-api-row small.configured {
+  color: var(--green);
+}
+.import-steam-api-row .button {
+  min-height: 27px;
+  padding: 4px 8px;
+  font-size: 0.59rem;
 }
 .import-steam-setup .field {
   margin: 0;

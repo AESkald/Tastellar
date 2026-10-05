@@ -1,10 +1,24 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Download, Upload } from "lucide-react";
 import { open, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { Modal } from "../../shared/ui/Modal";
 import { t } from "../../shared/ui/i18n";
 import { localizedErrorMessage } from "../../shared/ui/errorMessage";
+import {
+  CATALOG_CAPABILITIES_CHANGED_EVENT,
+  catalogCapabilities,
+} from "../../shared/bridge/catalogBridge";
+import type { CatalogCapability } from "../../shared/bridge/catalogTypes";
 import "./transfer.css";
+
+const credentialProviders = new Set(["tmdb", "googleBooks", "igdb", "steam"]);
+
+function anyPersonalProviderCredentials(capabilities: CatalogCapability[]): boolean {
+  return capabilities.some(
+    (capability) =>
+      credentialProviders.has(capability.provider) && capability.configured,
+  );
+}
 
 export function ImportExportPanel({
   onExport,
@@ -21,6 +35,34 @@ export function ImportExportPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [hasSavedProviderCredentials, setHasSavedProviderCredentials] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const update = (capabilities: CatalogCapability[]) => {
+      setHasSavedProviderCredentials(anyPersonalProviderCredentials(capabilities));
+    };
+    const refresh = () => {
+      void catalogCapabilities()
+        .then((capabilities) => {
+          if (mounted) update(capabilities);
+        })
+        .catch(() => {
+          if (mounted) setHasSavedProviderCredentials(false);
+        });
+    };
+    const handleCapabilitiesChanged = (event: Event) => {
+      const changed = (event as CustomEvent<CatalogCapability[]>).detail;
+      if (Array.isArray(changed)) update(changed);
+      else refresh();
+    };
+    refresh();
+    window.addEventListener(CATALOG_CAPABILITIES_CHANGED_EVENT, handleCapabilitiesChanged);
+    return () => {
+      mounted = false;
+      window.removeEventListener(CATALOG_CAPABILITIES_CHANGED_EVENT, handleCapabilitiesChanged);
+    };
+  }, []);
 
   async function exportArchive() {
     setError("");
@@ -102,6 +144,11 @@ export function ImportExportPanel({
           {t("settings.export")}
         </button>
       </div>
+      {isNative && hasSavedProviderCredentials && (
+        <p className="transfer-credential-warning" data-testid="export-credentials-warning">
+          {t("settings.exportCredentialsWarning")}
+        </p>
+      )}
       {!isNative && <p className="field-hint">{t("settings.previewData")}</p>}
       {error && (
         <p className="error-message" role="alert">

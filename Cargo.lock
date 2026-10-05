@@ -3761,9 +3761,7 @@ name = "tastellar"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
- "getrandom 0.4.3",
  "serde",
- "serde_json",
  "tastellar-domain",
  "tastellar-storage",
  "tauri",
@@ -3771,7 +3769,6 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-dialog",
  "url",
- "zeroize",
 ]
 
 [[package]]

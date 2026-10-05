@@ -3,12 +3,14 @@ import { ArrowUpRight, ChevronDown, ChevronRight, Search } from "lucide-react";
 import type { MediaType } from "../../shared/bridge/libraryTypes";
 import type {
   CatalogCapability,
+  CatalogProvider,
   CatalogSearchResult,
 } from "../../shared/bridge/catalogTypes";
 import { searchCatalog } from "../../shared/bridge/catalogBridge";
 import { SelectControl } from "../../shared/ui/SelectControl";
 import { ExternalLink } from "../../shared/ui/ExternalLink";
 import { t } from "../../shared/ui/i18n";
+import { ProviderCredentials } from "./ProviderCredentials";
 import {
   enabledCatalogProviders,
   preferredCatalogProvider,
@@ -41,6 +43,7 @@ export function CatalogSearchPanel({
   initialExternalIdProvider,
   initialMediaTypeId,
   capabilities,
+  onCapabilitiesChange,
   onSelect,
 }: {
   mediaTypes: MediaType[];
@@ -112,6 +115,10 @@ export function CatalogSearchPanel({
     if (!mediaTypeEdited.current) setMediaTypeId(initialMediaTypeId ?? "");
   }, [initialMediaTypeId]);
   const providers = provider ? [provider] : [];
+  const settingsProvider: Exclude<CatalogProvider, "openLibrary"> =
+    !provider || provider === "openLibrary"
+      ? "tmdb"
+      : (provider as Exclude<CatalogProvider, "openLibrary">);
   const parsedYear = /^\d{4}$/.test(year) ? Number(year) : null;
 
   useEffect(() => {
@@ -316,8 +323,8 @@ export function CatalogSearchPanel({
         </button>
       </form>
 
-      {providerCapabilities.length > 0 && (
-        <div className="catalog-provider-disclosure">
+      <div className="catalog-provider-disclosure">
+        <div className="catalog-provider-toolbar">
           <button
             type="button"
             className="text-button"
@@ -331,23 +338,28 @@ export function CatalogSearchPanel({
             )}
             {t("library.catalog.providersAndPrivacy")}
           </button>
-          {showProviders && (
-            <ul>
-              {providerCapabilities.map((item) => (
-                <li key={item.provider}>
-                  <strong>{item.label}</strong>
-                  <span>
-                    {item.enabled
-                      ? t("library.catalog.providerReady")
-                      : item.reason || t("library.catalog.providerUnavailable")}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p>{t("library.catalog.queryPrivacy")}</p>
+          <ProviderCredentials
+            capabilities={providerCapabilities}
+            onCapabilitiesChange={onCapabilitiesChange}
+            initialProvider={settingsProvider}
+          />
         </div>
-      )}
+        {showProviders && providerCapabilities.length > 0 && (
+          <ul>
+            {providerCapabilities.map((item) => (
+              <li key={item.provider}>
+                <strong>{item.label}</strong>
+                <span>
+                  {item.enabled
+                    ? t("library.catalog.providerReady")
+                    : item.reason || t("library.catalog.providerUnavailable")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p>{t("library.catalog.queryPrivacy")}</p>
+      </div>
 
       {!enabledProviders.length ? (
         <p className="catalog-search-empty">

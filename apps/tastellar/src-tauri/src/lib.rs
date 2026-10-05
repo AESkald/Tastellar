@@ -18,7 +18,6 @@ use tastellar_storage::{
     SearchCatalogInput, SearchCatalogResult, Storage, StorageError,
 };
 use tauri::Manager;
-mod private_providers;
 
 const EXTERNAL_LINK_HOSTS: &[&str] = &[
     "boosty.to",
@@ -28,6 +27,8 @@ const EXTERNAL_LINK_HOSTS: &[&str] = &[
     "developers.google.com",
     "www.igdb.com",
     "api-docs.igdb.com",
+    "dev.twitch.tv",
+    "console.cloud.google.com",
     "steamcommunity.com",
 ];
 
@@ -117,6 +118,8 @@ mod external_link_tests {
     fn allows_trusted_https_provider_links() {
         assert!(validate_external_url("https://boosty.to/tastellar").is_ok());
         assert!(validate_external_url("https://books.google.com/books?id=123").is_ok());
+        assert!(validate_external_url("https://dev.twitch.tv/console/apps").is_ok());
+        assert!(validate_external_url("https://console.cloud.google.com/apis/credentials").is_ok());
     }
 
     #[test]
@@ -125,6 +128,8 @@ mod external_link_tests {
         assert!(validate_external_url("https://boosty.to.evil.test/").is_err());
         assert!(validate_external_url("https://boosty.to@evil.test/").is_err());
         assert!(validate_external_url("https://boosty.to:444/").is_err());
+        assert!(validate_external_url("https://dev.twitch.tv.evil.test/").is_err());
+        assert!(validate_external_url("https://console.cloud.google.com@evil.test/").is_err());
         assert!(validate_external_url("file:///etc/passwd").is_err());
     }
 }
@@ -234,12 +239,43 @@ async fn export_recap_image(
 #[tauri::command]
 async fn reset_workspace(
     state: tauri::State<'_, AppStorage>,
+    provider_state: tauri::State<'_, AppProviderSession>,
     expected_version: i64,
 ) -> Result<ResetWorkspaceResult, CommandError> {
-    with_storage(state, move |storage| {
-        storage.reset_workspace(expected_version)
+    let storage = Arc::clone(&state.0);
+    let session = Arc::clone(&provider_state.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut storage = storage.lock().map_err(|_| CommandError {
+            code: "Internal",
+            message: "Storage lock was interrupted".into(),
+        })?;
+        match storage.reset_workspace(expected_version) {
+            Ok(result) => {
+                let credentials = storage
+                    .load_provider_credentials()
+                    .map_err(CommandError::from)?;
+                session
+                    .replace_saved_credentials(credentials)
+                    .map_err(CommandError::from)?;
+                Ok(result)
+            }
+            Err(error) if matches!(&error, StorageError::ResetCommittedCleanupPending) => {
+                let credentials = storage
+                    .load_provider_credentials()
+                    .map_err(CommandError::from)?;
+                session
+                    .replace_saved_credentials(credentials)
+                    .map_err(CommandError::from)?;
+                Err(CommandError::from(error))
+            }
+            Err(error) => Err(CommandError::from(error)),
+        }
     })
     .await
+    .map_err(|_| CommandError {
+        code: "Internal",
+        message: "The data operation was interrupted. Please try again.".into(),
+    })?
 }
 
 #[tauri::command]
@@ -340,13 +376,33 @@ async fn export_library_archive(
 #[tauri::command]
 async fn import_library_archive(
     state: tauri::State<'_, AppStorage>,
+    provider_state: tauri::State<'_, AppProviderSession>,
     path: String,
     expected_version: i64,
 ) -> Result<HomeState, CommandError> {
-    with_storage(state, move |storage| {
-        storage.import_library_archive(&path, expected_version)
+    let storage = Arc::clone(&state.0);
+    let session = Arc::clone(&provider_state.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut storage = storage.lock().map_err(|_| CommandError {
+            code: "Internal",
+            message: "Storage lock was interrupted".into(),
+        })?;
+        let restored = storage
+            .import_library_archive(&path, expected_version)
+            .map_err(CommandError::from)?;
+        let credentials = storage
+            .load_provider_credentials()
+            .map_err(CommandError::from)?;
+        session
+            .replace_saved_credentials(credentials)
+            .map_err(CommandError::from)?;
+        Ok(restored)
     })
     .await
+    .map_err(|_| CommandError {
+        code: "Internal",
+        message: "The data operation was interrupted. Please try again.".into(),
+    })?
 }
 
 #[tauri::command]
@@ -748,16 +804,26 @@ async fn undo_library_import(
 #[tauri::command]
 async fn configure_provider_credentials(
     state: tauri::State<'_, AppProviderSession>,
+    storage_state: tauri::State<'_, AppStorage>,
     input: ProviderCredentialInput,
 ) -> Result<ProviderCredentialState, CommandError> {
     let session = Arc::clone(&state.0);
-    tauri::async_runtime::spawn_blocking(move || configure_catalog_credentials(&session, input))
-        .await
-        .map_err(|_| CommandError {
+    let storage = Arc::clone(&storage_state.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut storage = storage.lock().map_err(|_| CommandError {
             code: "Internal",
-            message: "Provider setup was interrupted.".into(),
-        })?
-        .map_err(Into::into)
+            message: "Storage lock was interrupted".into(),
+        })?;
+        storage
+            .save_provider_credential(input.clone())
+            .map_err(CommandError::from)?;
+        configure_catalog_credentials(&session, input).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|_| CommandError {
+        code: "Internal",
+        message: "Provider setup was interrupted.".into(),
+    })?
 }
 
 #[tauri::command]
@@ -934,8 +1000,11 @@ pub fn run() {
             } else {
                 app.path().app_data_dir()?
             };
-            app.manage(AppStorage(Arc::new(Mutex::new(Storage::open(root)?))));
-            app.manage(AppProviderSession(Arc::new(private_providers::session()?)));
+            let storage = Storage::open(root)?;
+            let provider_session =
+                ProviderSession::from_saved_credentials(storage.load_provider_credentials()?)?;
+            app.manage(AppStorage(Arc::new(Mutex::new(storage))));
+            app.manage(AppProviderSession(Arc::new(provider_session)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

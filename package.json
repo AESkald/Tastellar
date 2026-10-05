@@ -15,7 +15,6 @@
     "desktop:build:app": "node scripts/desktop.mjs build macos app",
     "desktop:build:dmg": "node scripts/desktop.mjs build macos dmg",
     "desktop:build:windows": "node scripts/desktop.mjs build windows",
-    "provider-config:refresh": "node scripts/update-bundled-provider-config.mjs",
     "test:e2e": "PLAYWRIGHT_BROWSERS_PATH=\"$PWD/.tools/browsers\" playwright test"
   },
   "devDependencies": {

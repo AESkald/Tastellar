@@ -9,6 +9,12 @@
   flex-wrap: wrap;
   gap: 10px;
 }
+.transfer-credential-warning {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.65rem;
+  line-height: 1.45;
+}
 .transfer-selected-file {
   overflow-wrap: anywhere;
   color: var(--muted);

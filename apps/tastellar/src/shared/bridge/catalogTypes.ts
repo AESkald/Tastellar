@@ -72,7 +72,7 @@ export type ProviderCredentialInput =
   | {
       provider: "steam";
       apiKey: string;
-      steamId64: string;
+      steamId64?: string;
       clear?: false;
     }
   | {
@@ -94,5 +94,5 @@ export type ProviderCredentialInput =
 export interface ProviderCredentialState {
   provider: CatalogProvider;
   configured: boolean;
-  sessionOnly: true;
+  sessionOnly: false;
 }

@@ -37,7 +37,7 @@ pub use import::{
     PrepareImportInput,
 };
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 40_000_000;
 const MAX_BACKUP_BYTES: u64 = 50 * 1024 * 1024;
@@ -1058,6 +1058,18 @@ impl Storage {
             tx.commit()?;
             version = 12;
         }
+        if version == 12 {
+            let tx = conn.transaction()?;
+            tx.execute_batch("\
+                CREATE TABLE IF NOT EXISTS provider_credential (
+                    provider TEXT PRIMARY KEY CHECK(provider IN ('tmdb','googleBooks','igdb','steam')),
+                    json TEXT NOT NULL
+                );
+                PRAGMA user_version=13;
+            ")?;
+            tx.commit()?;
+            version = 13;
+        }
         debug_assert_eq!(version, SCHEMA_VERSION);
         recover_interrupted_reset(&root, &conn)?;
         let mut storage = Self {
@@ -1067,6 +1079,7 @@ impl Storage {
             import_batches: BTreeMap::new(),
         };
         storage.recover_ranking_state()?;
+        storage.load_provider_credentials()?;
         Ok(storage)
     }
 
@@ -1100,6 +1113,7 @@ impl Storage {
         tx.execute("DELETE FROM media_type", [])?;
         tx.execute("DELETE FROM criterion", [])?;
         tx.execute("DELETE FROM assets", [])?;
+        tx.execute("DELETE FROM provider_credential", [])?;
         seed_default_vocabulary(&tx)?;
         upgrade_seeded_vocabulary_to_current(&tx, &now_rfc3339())?;
         // The seeded-vocabulary migration restores this legacy type as archived,
@@ -2236,6 +2250,59 @@ impl Storage {
         self.load_home()
     }
 
+    /// Load credentials for native session initialization and archive restore.
+    /// Never forward this result through the public capability API.
+    pub fn load_provider_credentials(&self) -> Result<Vec<ProviderCredentialInput>, StorageError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT provider,json FROM provider_credential ORDER BY provider")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut credentials = Vec::new();
+        for row in rows {
+            let (provider, json) = row?;
+            let input: ProviderCredentialInput = serde_json::from_str(&json).map_err(|_| {
+                StorageError::Validation("Saved provider credentials are invalid".into())
+            })?;
+            if input.provider != provider || input.clear {
+                return Err(StorageError::Validation(
+                    "Saved provider credentials are invalid".into(),
+                ));
+            }
+            credentials.push(input);
+        }
+        ProviderSession::from_saved_credentials(credentials.clone())?;
+        Ok(credentials)
+    }
+
+    /// Validate and persist one provider update without changing the library
+    /// revision. Tauri updates its active provider session after this commits.
+    pub fn save_provider_credential(
+        &mut self,
+        input: ProviderCredentialInput,
+    ) -> Result<catalog::ProviderCredentialState, StorageError> {
+        let validation_session = ProviderSession::default();
+        let state = configure_provider_credentials(&validation_session, input.clone())?;
+        let tx = self.conn.transaction()?;
+        if input.clear {
+            tx.execute(
+                "DELETE FROM provider_credential WHERE provider=?1",
+                [&state.provider],
+            )?;
+        } else {
+            let mut saved = input;
+            saved.provider = state.provider.clone();
+            let json = serde_json::to_string(&saved)?;
+            tx.execute(
+                "INSERT INTO provider_credential(provider,json) VALUES(?1,?2) ON CONFLICT(provider) DO UPDATE SET json=excluded.json",
+                params![state.provider, json],
+            )?;
+        }
+        tx.commit()?;
+        Ok(state)
+    }
+
     pub fn save_preferences(
         &mut self,
         expected_version: i64,
@@ -2550,6 +2617,26 @@ impl Storage {
         }
         Ok(bytes)
     }
+}
+
+pub(crate) fn replace_provider_credentials_in_transaction(
+    tx: &Transaction<'_>,
+    credentials: &[ProviderCredentialInput],
+) -> Result<(), StorageError> {
+    if credentials.iter().any(|credential| credential.clear) {
+        return Err(StorageError::Validation(
+            "Archive provider credentials are invalid".into(),
+        ));
+    }
+    ProviderSession::from_saved_credentials(credentials.to_vec())?;
+    tx.execute("DELETE FROM provider_credential", [])?;
+    for credential in credentials {
+        tx.execute(
+            "INSERT INTO provider_credential(provider,json) VALUES(?1,?2)",
+            params![credential.provider, serde_json::to_string(credential)?],
+        )?;
+    }
+    Ok(())
 }
 
 fn now_epoch() -> i64 {
@@ -2938,6 +3025,17 @@ fn validate_supported_image(
 mod tests {
     use super::*;
 
+    fn synthetic_api_key(provider: &str) -> ProviderCredentialInput {
+        ProviderCredentialInput {
+            provider: provider.into(),
+            api_key: Some("synthetic-test-api-key-123".into()),
+            steam_id64: None,
+            client_id: None,
+            client_secret: None,
+            clear: false,
+        }
+    }
+
     fn test_root(label: &str) -> PathBuf {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.runtime/native-tests")
@@ -2951,6 +3049,81 @@ mod tests {
             ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn provider_credentials_persist_across_reopen_without_changing_library_revision() {
+        let root = test_root("provider-persistence");
+        let mut storage = Storage::open(&root).unwrap();
+        let original_version = storage.load_home().unwrap().version;
+        let saved = storage
+            .save_provider_credential(synthetic_api_key("tmdb"))
+            .unwrap();
+        assert!(saved.configured);
+        assert!(!saved.session_only);
+        assert_eq!(storage.load_home().unwrap().version, original_version);
+
+        drop(storage);
+        let mut reopened = Storage::open(&root).unwrap();
+        let session =
+            ProviderSession::from_saved_credentials(reopened.load_provider_credentials().unwrap())
+                .unwrap();
+        assert!(
+            catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "tmdb")
+                .unwrap()
+                .configured
+        );
+
+        let cleared = reopened
+            .save_provider_credential(ProviderCredentialInput {
+                provider: "tmdb".into(),
+                api_key: None,
+                steam_id64: None,
+                client_id: None,
+                client_secret: None,
+                clear: true,
+            })
+            .unwrap();
+        assert!(!cleared.configured);
+        assert!(reopened.load_provider_credentials().unwrap().is_empty());
+        drop(reopened);
+
+        let reopened = Storage::open(&root).unwrap();
+        assert!(reopened.load_provider_credentials().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_provider_update_leaves_the_saved_credential_intact() {
+        let root = test_root("provider-invalid-update");
+        let mut storage = Storage::open(&root).unwrap();
+        storage
+            .save_provider_credential(synthetic_api_key("tmdb"))
+            .unwrap();
+        let invalid = ProviderCredentialInput {
+            provider: "tmdb".into(),
+            api_key: Some("synthetic-test-replacement-123".into()),
+            steam_id64: None,
+            client_id: Some("unexpected-client-id-123".into()),
+            client_secret: None,
+            clear: false,
+        };
+        assert!(storage.save_provider_credential(invalid).is_err());
+        let session =
+            ProviderSession::from_saved_credentials(storage.load_provider_credentials().unwrap())
+                .unwrap();
+        assert!(
+            catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "tmdb")
+                .unwrap()
+                .configured
+        );
+        assert_eq!(storage.load_provider_credentials().unwrap().len(), 1);
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn drop_test_ranking_schema(connection: &Connection) {
@@ -3007,6 +3180,19 @@ mod tests {
     fn workspace_reset_clears_owned_data_and_restores_only_current_defaults() {
         let root = test_root("workspace-reset");
         let mut storage = Storage::open(&root).unwrap();
+        storage
+            .save_provider_credential(synthetic_api_key("tmdb"))
+            .unwrap();
+        let active_provider_session =
+            ProviderSession::from_saved_credentials(storage.load_provider_credentials().unwrap())
+                .unwrap();
+        assert!(
+            catalog_capabilities(&active_provider_session)
+                .into_iter()
+                .find(|capability| capability.provider == "tmdb")
+                .unwrap()
+                .configured
+        );
         let initial = storage.load_home().unwrap();
         let hash = "a".repeat(64);
         let asset_path = root.join("assets").join(format!("{hash}.png"));
@@ -3051,8 +3237,19 @@ mod tests {
         let revision = initial.version;
 
         let reset = storage.reset_workspace(revision).unwrap();
+        active_provider_session
+            .replace_saved_credentials(storage.load_provider_credentials().unwrap())
+            .unwrap();
 
         assert_eq!(reset.home.version, revision + 1);
+        assert!(storage.load_provider_credentials().unwrap().is_empty());
+        assert!(
+            !catalog_capabilities(&active_provider_session)
+                .into_iter()
+                .find(|capability| capability.provider == "tmdb")
+                .unwrap()
+                .configured
+        );
         assert_eq!(reset.library.revision, reset.home.version);
         assert_eq!(reset.home.profile.nickname, "");
         assert!(reset.home.profile.avatar_asset_id.is_none());

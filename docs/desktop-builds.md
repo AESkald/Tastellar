@@ -12,15 +12,9 @@ npm ci
 
 Both targets also require Node.js with npm and Rust stable. If this checkout has the project-local Rust toolchain under `.tools`, the desktop build script selects it; otherwise install Rust for the host OS.
 
-Release builds include the app-managed credentials for TMDb, Google Books, IGDB, and Steam, so users do not need to enter provider API keys. The same embedded configuration is used by the macOS app and DMG and the Windows NSIS installer; users do not need a separate runtime file. A local `.runtime/provider-credentials.json` overrides the bundled defaults; `TASTELLAR_PROVIDER_CREDENTIALS_FILE` overrides both. Fresh checkouts and CI builds use the bundled defaults when the local file is absent. The checked-in defaults are split into randomized binary shares and randomized again during each build. This only deters casual string extraction: anyone who can inspect the app can recover the credentials, so treat them as public and rotate them if they are abused.
+Release builds contain no provider API keys and do not read ignored runtime credential files. Users enter their own keys from **Add work** or **Import → API settings**. The native app keeps them in its local SQLite data and uses them for provider requests; the capability API reports only whether a provider is configured. No key is returned to the interface or added to the executable during the build.
 
-After rotating the provider credentials, maintainers can refresh the bundled defaults from `.runtime/provider-credentials.json` with:
-
-```sh
-npm run provider-config:refresh
-```
-
-To use another source file, set `TASTELLAR_PROVIDER_CREDENTIALS_FILE` for that command. The refresh command validates the file and reports success without printing credential values. It updates the two binary assets in `apps/tastellar/src-tauri/private-provider-config/`; include those updated assets with the release change.
+The portable `.tastellar.json` archive includes configured provider credentials in plain text so a user can restore them on another installation. Keep exported archives private. Legacy archives without the credential section restore an empty credential set.
 
 ## macOS app and DMG
 

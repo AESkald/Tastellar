@@ -1,7 +1,8 @@
 use super::ranking::RankingArchive;
 use super::{
-    entry_group, hex_hash, normalize_name, now_epoch, now_rfc3339, validate_image, ExportResult,
-    Storage, StorageError,
+    entry_group, hex_hash, normalize_name, now_epoch, now_rfc3339,
+    replace_provider_credentials_in_transaction, validate_image, ExportResult,
+    ProviderCredentialInput, ProviderSession, Storage, StorageError,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use rusqlite::{params, Transaction};
@@ -23,7 +24,8 @@ use tastellar_domain::{
 const FORMAT: &str = "tastellar-library";
 const LEGACY_FORMAT_VERSION: u32 = 1;
 const RANKING_FORMAT_VERSION: u32 = 2;
-const FORMAT_VERSION: u32 = 3;
+const SOURCE_ORDER_FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_STATE_FILE_BYTES: u64 = 128 * 1024 * 1024;
@@ -33,6 +35,7 @@ const HOME_PATH: &str = "data/home.json";
 const LIBRARY_PATH: &str = "data/library.json";
 const HISTORY_PATH: &str = "data/history.json";
 const README_PATH: &str = "README.txt";
+const PROVIDER_CREDENTIALS_PATH: &str = "data/provider-credentials.json";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -53,6 +56,8 @@ struct PortableArchive {
     home: HomeState,
     library: LibraryState,
     history: PortableHistory,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_credentials: Vec<ProviderCredentialInput>,
     assets: Vec<PortableAsset>,
     readme: String,
 }
@@ -142,10 +147,13 @@ impl Storage {
         let library_bytes = serde_json::to_vec_pretty(&library)?;
         let history = self.load_portable_history(&library)?;
         let history_bytes = serde_json::to_vec_pretty(&history)?;
-        let readme = README_V3.as_bytes();
+        let provider_credentials = self.load_provider_credentials()?;
+        let provider_credentials_bytes = serde_json::to_vec_pretty(&provider_credentials)?;
+        let readme = README_V4.as_bytes();
         if home_bytes.len() as u64 > MAX_STATE_FILE_BYTES
             || library_bytes.len() as u64 > MAX_STATE_FILE_BYTES
             || history_bytes.len() as u64 > MAX_STATE_FILE_BYTES
+            || provider_credentials_bytes.len() as u64 > MAX_STATE_FILE_BYTES
         {
             return Err(StorageError::Validation(
                 "Library data exceeds the supported archive size".into(),
@@ -157,6 +165,7 @@ impl Storage {
             descriptor(LIBRARY_PATH, &library_bytes),
             descriptor(HISTORY_PATH, &history_bytes),
             descriptor(README_PATH, readme),
+            descriptor(PROVIDER_CREDENTIALS_PATH, &provider_credentials_bytes),
         ];
         let mut assets = self.load_referenced_assets(&home, &library, &history)?;
         assets.sort_by(|left, right| left.path.cmp(&right.path));
@@ -200,6 +209,7 @@ impl Storage {
                 .expect("new exports include ranking state"),
         );
         datasets.insert("assets".into(), assets.len());
+        datasets.insert("providerCredentials".into(), provider_credentials.len());
         let manifest = PortableManifest {
             format: FORMAT.into(),
             format_version: FORMAT_VERSION,
@@ -222,6 +232,7 @@ impl Storage {
             home,
             library,
             history,
+            provider_credentials,
             assets: assets
                 .into_iter()
                 .map(|asset| PortableAsset {
@@ -232,7 +243,7 @@ impl Storage {
                     base64: BASE64.encode(asset.bytes),
                 })
                 .collect(),
-            readme: README_V3.into(),
+            readme: README_V4.into(),
         };
         let archive_bytes = serde_json::to_vec_pretty(&archive)?;
         if archive_bytes.len() as u64 > MAX_ARCHIVE_BYTES {
@@ -303,6 +314,7 @@ impl Storage {
             || ![
                 LEGACY_FORMAT_VERSION,
                 RANKING_FORMAT_VERSION,
+                SOURCE_ORDER_FORMAT_VERSION,
                 FORMAT_VERSION,
             ]
             .contains(&manifest.format_version)
@@ -317,7 +329,12 @@ impl Storage {
                 "Archive ranking data does not match its format version".into(),
             ));
         }
-        validate_manifest(manifest, archive.assets.len(), manifest.format_version)?;
+        validate_manifest(
+            manifest,
+            archive.assets.len(),
+            archive.provider_credentials.len(),
+            manifest.format_version,
+        )?;
         let original_home = original_archive
             .get("home")
             .ok_or_else(|| StorageError::Validation("Archive is missing its Home data".into()))?;
@@ -328,10 +345,20 @@ impl Storage {
         verify_virtual_file(manifest, LIBRARY_PATH, &library_bytes)?;
         verify_virtual_file(manifest, HISTORY_PATH, &history_bytes)?;
         verify_virtual_file(manifest, README_PATH, archive.readme.as_bytes())?;
+        if manifest.format_version >= FORMAT_VERSION {
+            let credentials_bytes = serde_json::to_vec_pretty(&archive.provider_credentials)?;
+            verify_virtual_file(manifest, PROVIDER_CREDENTIALS_PATH, &credentials_bytes)?;
+        } else if !archive.provider_credentials.is_empty() {
+            return Err(StorageError::Validation(
+                "Legacy archives cannot contain provider credentials".into(),
+            ));
+        }
+        ProviderSession::from_saved_credentials(archive.provider_credentials.clone())?;
         let expected_readme = match manifest.format_version {
             LEGACY_FORMAT_VERSION => README_V1,
             RANKING_FORMAT_VERSION => README_V2,
-            FORMAT_VERSION => README_V3,
+            SOURCE_ORDER_FORMAT_VERSION => README_V3,
+            FORMAT_VERSION => README_V4,
             _ => return Err(StorageError::UnsupportedVersion),
         };
         if archive.readme != expected_readme {
@@ -361,6 +388,9 @@ impl Storage {
             || manifest.datasets.get("criterionRatingRecords")
                 != Some(&history.criterion_rating_records.len())
             || manifest.datasets.get("trashedEntries") != Some(&history.trashed_entries.len())
+            || (manifest.format_version >= FORMAT_VERSION
+                && manifest.datasets.get("providerCredentials")
+                    != Some(&archive.provider_credentials.len()))
             || !ranking_dataset_counts_match(
                 &manifest.datasets,
                 history.ranking.as_ref(),
@@ -466,6 +496,7 @@ impl Storage {
         let import_orders = archive_import_orders(&library, &history, manifest.format_version)?;
         replace_state_in_transaction(&tx, &home, &library, &history, &import_orders)?;
         Self::import_ranking_archive(&tx, history.ranking.as_ref())?;
+        replace_provider_credentials_in_transaction(&tx, &archive.provider_credentials)?;
         tx.execute("UPDATE metadata SET version=version+1 WHERE id=1", [])?;
         tx.commit()?;
         self.load_home()
@@ -663,6 +694,7 @@ impl Storage {
 const README_V1: &str = "Tastellar portable library archive, version 1.\n\nThis UTF-8 JSON archive contains your Tastellar profile, preferences, workspace, active and trashed stories, ratings and rating timestamps, media types, criteria, tags, entry history, group order, and referenced original images. Data fields use camelCase names. Partial release dates retain their year, month, day, and precision. Image originals are stored as base64 strings and checked against SHA-256 hashes.\n\nThe archive is intended for inspection and restoration in Tastellar. It stays at the destination you selected; the app does not upload it.\n";
 const README_V2: &str = "Tastellar portable library archive, version 2.\n\nThis UTF-8 JSON archive contains your Tastellar profile, preferences, workspace, active and trashed stories, ratings and rating timestamps, media types, criteria, tags, entry history, group order, media ranking placement, ranking sessions and preference evidence, and referenced original images. Data fields use camelCase names. Partial release dates retain their year, month, day, and precision. Image originals are stored as base64 strings and checked against SHA-256 hashes. Rebuildable ranking fit caches are recreated after import.\n\nThe archive is intended for inspection and restoration in Tastellar. It stays at the destination you selected; the app does not upload it.\n";
 const README_V3: &str = "Tastellar portable library archive, version 3.\n\nThis UTF-8 JSON archive contains your Tastellar profile, preferences, workspace, active and trashed stories, ratings and rating timestamps, immutable source order, media types, criteria, tags, entry history, group order, media ranking placement, ranking sessions and preference evidence, and referenced original images. Data fields use camelCase names. Partial release dates retain their year, month, day, and precision. Image originals are stored as base64 strings and checked against SHA-256 hashes. Rebuildable ranking fit caches are recreated after import.\n\nThe archive is intended for inspection and restoration in Tastellar. It stays at the destination you selected; the app does not upload it.\n";
+const README_V4: &str = "Tastellar portable library archive, version 4.\n\nThis UTF-8 JSON archive contains your Tastellar profile, preferences, workspace, active and trashed stories, ratings and rating timestamps, immutable source order, media types, criteria, tags, entry history, group order, media ranking placement, ranking sessions and preference evidence, configured provider credentials, and referenced original images. Data fields use camelCase names. Partial release dates retain their year, month, day, and precision. Image originals are stored as base64 strings and checked against SHA-256 hashes. Rebuildable ranking fit caches are recreated after import.\n\nProvider credentials are included as plain text when configured. Keep this archive private. The archive stays at the destination you selected; the app does not upload it.\n";
 
 #[derive(Debug)]
 struct ArchiveAsset {
@@ -717,7 +749,7 @@ fn ranking_dataset_counts_match(
         ]
         .iter()
         .all(|name| !datasets.contains_key(*name)),
-        (RANKING_FORMAT_VERSION | FORMAT_VERSION, Some(ranking)) => {
+        (RANKING_FORMAT_VERSION..=FORMAT_VERSION, Some(ranking)) => {
             let mut expected = BTreeMap::new();
             add_ranking_dataset_counts(&mut expected, ranking);
             expected
@@ -731,14 +763,16 @@ fn ranking_dataset_counts_match(
 fn validate_manifest(
     manifest: &PortableManifest,
     asset_count: usize,
+    provider_credential_count: usize,
     format_version: u32,
 ) -> Result<(), StorageError> {
+    let additional_file_count = usize::from(format_version >= FORMAT_VERSION);
     if manifest.library_id.trim().is_empty()
         || manifest.library_id.len() > 100
         || manifest.producer_app_version.is_empty()
         || manifest.producer_app_version.len() > 100
         || manifest.exported_at_utc.is_empty()
-        || manifest.files.len() != asset_count + 4
+        || manifest.files.len() != asset_count + 4 + additional_file_count
         || manifest.files.len() > MAX_ARCHIVE_FILES
     {
         return Err(StorageError::Validation(
@@ -768,6 +802,9 @@ fn validate_manifest(
             "rankingBoundaries",
             "rankingOrderEvents",
         ]);
+    }
+    if format_version >= FORMAT_VERSION {
+        known_datasets.push("providerCredentials");
     }
     if manifest.datasets.len() != known_datasets.len()
         || manifest
@@ -816,6 +853,7 @@ fn validate_manifest(
                 && file.path != LIBRARY_PATH
                 && file.path != HISTORY_PATH
                 && file.path != README_PATH
+                && !(format_version >= FORMAT_VERSION && file.path == PROVIDER_CREDENTIALS_PATH)
                 && !file.path.starts_with("assets/")
         })
     {
@@ -830,6 +868,8 @@ fn validate_manifest(
         .count();
     if manifest.datasets.get("assets") != Some(&asset_files)
         || manifest.datasets.get("profile") != Some(&1)
+        || (format_version >= FORMAT_VERSION
+            && manifest.datasets.get("providerCredentials") != Some(&provider_credential_count))
     {
         return Err(StorageError::Validation(
             "Archive asset count does not match its manifest".into(),
@@ -1490,7 +1530,7 @@ fn validate_import_orders(
     history: &PortableHistory,
     format_version: u32,
 ) -> Result<(), StorageError> {
-    if format_version < FORMAT_VERSION {
+    if format_version < SOURCE_ORDER_FORMAT_VERSION {
         return Ok(());
     }
     let mut orders = HashSet::new();
@@ -1519,7 +1559,7 @@ fn archive_import_orders(
     format_version: u32,
 ) -> Result<HashMap<String, i64>, StorageError> {
     let mut orders = HashMap::new();
-    if format_version >= FORMAT_VERSION {
+    if format_version >= SOURCE_ORDER_FORMAT_VERSION {
         for entry in &library.entries {
             let order = entry.import_order.ok_or_else(|| {
                 StorageError::Validation("Archive is missing source ordering".into())
@@ -1713,6 +1753,7 @@ fn now_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog_capabilities;
     use base64::engine::general_purpose::STANDARD as BASE64;
     use std::path::PathBuf;
     use tastellar_domain::{
@@ -1820,8 +1861,185 @@ mod tests {
         descriptor.byte_size = bytes.len() as u64;
     }
 
+    fn remove_v4_provider_section_for_legacy_archive(archive: &mut PortableArchive) {
+        archive.provider_credentials.clear();
+        archive.manifest.datasets.remove("providerCredentials");
+        archive
+            .manifest
+            .files
+            .retain(|file| file.path != PROVIDER_CREDENTIALS_PATH);
+    }
+
+    fn api_key(provider: &str, key: &str) -> ProviderCredentialInput {
+        ProviderCredentialInput {
+            provider: provider.into(),
+            api_key: Some(key.into()),
+            steam_id64: None,
+            client_id: None,
+            client_secret: None,
+            clear: false,
+        }
+    }
+
     #[test]
-    fn source_order_survives_ranking_reorders_and_v3_archive_round_trip() {
+    fn v4_archive_round_trip_restores_provider_keys_and_refreshes_session_status() {
+        let source_root = test_root("provider-v4-source");
+        let target_root = test_root("provider-v4-target");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let archive_path = source_root.join("provider-v4.tastellar.json");
+        let mut source = Storage::open(&source_root).unwrap();
+        source
+            .save_provider_credential(api_key("tmdb", "synthetic-tmdb-key-123"))
+            .unwrap();
+        source
+            .save_provider_credential(api_key("googleBooks", "synthetic-books-key-123"))
+            .unwrap();
+        source.export_library_archive(&archive_path).unwrap();
+
+        let exported: PortableArchive =
+            serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
+        assert_eq!(exported.manifest.format_version, FORMAT_VERSION);
+        assert_eq!(exported.provider_credentials.len(), 2);
+        assert_eq!(
+            exported.manifest.datasets.get("providerCredentials"),
+            Some(&2)
+        );
+        assert!(exported
+            .manifest
+            .files
+            .iter()
+            .any(|file| file.path == PROVIDER_CREDENTIALS_PATH));
+        let exported_json = fs::read_to_string(&archive_path).unwrap();
+        assert!(exported_json.contains("synthetic-tmdb-key-123"));
+
+        let mut target = Storage::open(&target_root).unwrap();
+        target
+            .save_provider_credential(api_key("steam", "synthetic-steam-key-123"))
+            .unwrap();
+        let revision = target.load_home().unwrap().version;
+        target
+            .import_library_archive(&archive_path, revision)
+            .unwrap();
+        let restored = target.load_provider_credentials().unwrap();
+        assert_eq!(restored, exported.provider_credentials);
+        let session = ProviderSession::from_saved_credentials(restored).unwrap();
+        assert!(
+            catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "tmdb")
+                .unwrap()
+                .configured
+        );
+        assert!(
+            !catalog_capabilities(&session)
+                .into_iter()
+                .find(|capability| capability.provider == "igdb")
+                .unwrap()
+                .configured
+        );
+
+        drop(source);
+        drop(target);
+        fs::remove_dir_all(source_root).unwrap();
+        fs::remove_dir_all(target_root).unwrap();
+    }
+
+    #[test]
+    fn version_three_archive_keeps_checksums_and_order_and_clears_existing_keys() {
+        let source_root = test_root("provider-v3-source");
+        let target_root = test_root("provider-v3-target");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let archive_path = source_root.join("provider-v3.tastellar.json");
+        let mut source = Storage::open(&source_root).unwrap();
+        save_scored_entries(
+            &mut source,
+            &[("ordered-a", "Ordered A", 7), ("ordered-b", "Ordered B", 7)],
+        );
+        source
+            .save_provider_credential(api_key("tmdb", "synthetic-tmdb-key-123"))
+            .unwrap();
+        let expected_orders: Vec<_> = source
+            .load_library()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.import_order)
+            .collect();
+        source.export_library_archive(&archive_path).unwrap();
+
+        let mut legacy: PortableArchive =
+            serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
+        remove_v4_provider_section_for_legacy_archive(&mut legacy);
+        legacy.manifest.format_version = SOURCE_ORDER_FORMAT_VERSION;
+        legacy.readme = README_V3.into();
+        refresh_virtual_file(&mut legacy, README_PATH, README_V3.as_bytes());
+        fs::write(&archive_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let mut target = Storage::open(&target_root).unwrap();
+        target
+            .save_provider_credential(api_key("steam", "synthetic-steam-key-123"))
+            .unwrap();
+        let revision = target.load_home().unwrap().version;
+        target
+            .import_library_archive(&archive_path, revision)
+            .unwrap();
+        assert!(target.load_provider_credentials().unwrap().is_empty());
+        let restored_orders: Vec<_> = target
+            .load_library()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.import_order)
+            .collect();
+        assert_eq!(restored_orders, expected_orders);
+
+        drop(source);
+        drop(target);
+        fs::remove_dir_all(source_root).unwrap();
+        fs::remove_dir_all(target_root).unwrap();
+    }
+
+    #[test]
+    fn invalid_provider_credentials_in_archive_leave_current_keys_untouched() {
+        let source_root = test_root("invalid-provider-archive-source");
+        let target_root = test_root("invalid-provider-archive-target");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let archive_path = source_root.join("invalid-provider.tastellar.json");
+        let mut source = Storage::open(&source_root).unwrap();
+        source
+            .save_provider_credential(api_key("tmdb", "synthetic-tmdb-key-123"))
+            .unwrap();
+        source.export_library_archive(&archive_path).unwrap();
+        let mut invalid: PortableArchive =
+            serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
+        invalid.provider_credentials[0].provider = "unknown-provider".into();
+        let credential_bytes = serde_json::to_vec_pretty(&invalid.provider_credentials).unwrap();
+        refresh_virtual_file(&mut invalid, PROVIDER_CREDENTIALS_PATH, &credential_bytes);
+        fs::write(&archive_path, serde_json::to_vec_pretty(&invalid).unwrap()).unwrap();
+
+        let mut target = Storage::open(&target_root).unwrap();
+        target
+            .save_provider_credential(api_key("googleBooks", "synthetic-books-key-123"))
+            .unwrap();
+        let revision = target.load_home().unwrap().version;
+        assert!(target
+            .import_library_archive(&archive_path, revision)
+            .is_err());
+        let current = target.load_provider_credentials().unwrap();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].provider, "googleBooks");
+
+        drop(source);
+        drop(target);
+        fs::remove_dir_all(source_root).unwrap();
+        fs::remove_dir_all(target_root).unwrap();
+    }
+
+    #[test]
+    fn source_order_survives_ranking_reorders_and_v4_archive_round_trip() {
         let source_root = test_root("source-order-source");
         let target_root = test_root("source-order-target");
         fs::create_dir_all(&source_root).unwrap();
@@ -1931,6 +2149,7 @@ mod tests {
 
         let mut legacy: PortableArchive =
             serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
+        remove_v4_provider_section_for_legacy_archive(&mut legacy);
         legacy.manifest.format_version = RANKING_FORMAT_VERSION;
         legacy.readme = README_V2.into();
         legacy.library.entries.reverse();
@@ -2072,6 +2291,7 @@ mod tests {
 
         let mut legacy: PortableArchive =
             serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
+        remove_v4_provider_section_for_legacy_archive(&mut legacy);
         legacy.history.ranking = None;
         legacy.manifest.format_version = LEGACY_FORMAT_VERSION;
         legacy.readme = README_V1.into();

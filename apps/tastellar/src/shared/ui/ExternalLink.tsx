@@ -9,6 +9,8 @@ const trustedHosts = new Set([
   "developers.google.com",
   "www.igdb.com",
   "api-docs.igdb.com",
+  "dev.twitch.tv",
+  "console.cloud.google.com",
   "steamcommunity.com",
 ]);
 
