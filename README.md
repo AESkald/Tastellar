@@ -1,25 +1,49 @@
-# Tastellar 1.0 — desktop app
+# Tastellar
 
-A local personal media library with rating, score-tier rankings and duel-based ordering. Version 1.0 includes the profile, taste priorities, recommendation prompt, Library, Ranking, portable archives, workspace tabs and settings.
+**A personal library for the stories and media that matter to you.**
 
-## Run the desktop app
+Tastellar is a free, ad-free desktop app for keeping track of films, TV, animation, comics, games, literature, and media types you create. Add works, rate what you have experienced, and shape a ranking that reflects your own taste.
 
-Prerequisites: Node.js, npm, Rust stable, and the native build tools for your operating system. macOS requires Xcode Command Line Tools; Windows requires Microsoft C++ Build Tools with the “Desktop development with C++” workload and the Rust MSVC toolchain. See the [desktop build guide](docs/desktop-builds.md) for platform setup and installer commands. A project-local Rust toolchain is used automatically when present under `.tools`.
+## What you can do
+
+- Keep a searchable, organized library with covers, tags, release dates, and your own reviews.
+- Rate works from 1 to 10, then arrange favorites within each score tier by hand or through head-to-head comparisons called **Duels**.
+- Explore your ratings and rankings in **Analytics**, then design and export shareable **Recap** images from your library.
+- Import lists from Letterboxd ZIP, IMDb CSV, Goodreads CSV, MyAnimeList XML or XML.gz, supported CSV/TSV files, and one-title-per-line text files. Steam owned games can be imported through Steam's API.
+- Look up works in TMDb, Open Library, Google Books, and IGDB catalogs when adding or importing.
+
+Manual entry and local file imports work without provider credentials. Some catalog searches and the Steam import require credentials you supply yourself; add them through API settings in **Add work** or **Import**. Tastellar does not include bundled provider keys.
+
+## Your library stays yours
+
+The desktop app stores your library on your device in SQLite. You can export and restore a portable `.tastellar.json` archive. If you have configured provider credentials, they are included in that archive as plain text, so keep exported archives private. Provider credentials are saved locally and are not included in Tastellar builds.
+
+## Run Tastellar from source
+
+You need Node.js with npm, Rust stable, and the native build tools for your operating system. On macOS, install Xcode Command Line Tools. On Windows, install Microsoft C++ Build Tools with **Desktop development with C++** and the Rust MSVC toolchain. See the [desktop build guide](docs/desktop-builds.md) for platform setup.
+
+Clone the repository, then install and launch from its root:
 
 ```sh
-npm install
+git clone https://github.com/AESkald/Tastellar.git
+cd Tastellar
+npm ci
 npm run desktop
 ```
 
-The development launcher stores data in `.runtime/development` inside this project. It uses SQLite, not browser storage. The packaged app stores data in the operating system’s application data directory unless `TASTELLAR_DATA_DIR` is explicitly set.
+The development desktop app stores its data in `.runtime/development` within the project. Packaged builds use the operating system's application data folder by default.
 
-Build a macOS app and DMG installer:
+## Build a desktop package
 
-```sh
-npm run desktop:build:macos
-```
+Build each package on its target operating system. Run these commands from the repository root after installing dependencies with `npm ci`:
 
-For the Windows setup executable and signing guidance, see the [desktop build guide](docs/desktop-builds.md). Local builds are for development and are not notarized for public distribution.
+| Package | Build command | Host |
+| --- | --- | --- |
+| macOS app (`.app`) | `npm run desktop:build:app` | macOS |
+| macOS disk image (`.dmg`) | `npm run desktop:build:dmg` | macOS |
+| Windows setup (`.exe`, NSIS) | `npm run desktop:build:windows` | 64-bit Windows |
+
+The [build guide](docs/desktop-builds.md) covers dependencies, signing, macOS notarization, and package details for public distribution.
 
 ## Browser preview
 
@@ -27,44 +51,24 @@ For the Windows setup executable and signing guidance, see the [desktop build gu
 npm run dev
 ```
 
-Open `http://127.0.0.1:1420`. The preview is clearly labeled and keeps changes in memory only; refreshing clears them. Native persistence, avatar validation and backup dialogs must be tested in the desktop app. No browser local storage is used.
+Open <http://127.0.0.1:1420>. This is a preview of the interface, not the desktop app: its data stays in memory and is cleared when the page refreshes. Use the desktop app to try persistent storage, imports, and backup or restore.
 
-## Available now
+## Development checks
 
-- Editable nickname, avatar and written tastes; original avatar stored safely with a sanitized display derivative.
-- Explicit 1–10 taste priorities; radar for three or more visible qualities, bars for one or two, and honest empty states.
-- Editable definitions for all ten rating scores.
-- Locally generated, configurable recommendation prompt with preview, inclusion controls and clipboard copy.
-- Multiple independent tabs, configurable tab shortcuts, navigation rail, collapsible group sidebar shells and resizable details panel shell.
-- System, Daylight, Midnight, Dusk and Forest themes, text sizing, reduced motion, startup and restore-tab settings.
-- Portable `.tastellar.json` archives for profile and workspace data, stories, ratings, media types, criteria, tags, history, trash, original covers/avatar, and saved provider API credentials; validation and an automatic recovery archive before restore. Version 4 archives contain configured keys as plain text.
-
-There are no sample works or invented stats. Mobile targets, media editors, merge import, and graphics scenes are not implemented in this slice. Archive size limits and the current JSON format are documented in [data durability](projectstructure/architecture/12-data-safety.md).
-
-## Tests
+From the repository root:
 
 ```sh
 npm test
 npm run build
-npm run test:e2e
+cargo test -p tastellar-domain -p tastellar-storage
 ```
 
-Browser tests expect the local dev server on port 1420. Install the project-local browser first if needed:
+The [CI workflow](.github/workflows/checks.yml) also covers browser end-to-end checks and the Windows installer build.
 
-```sh
-PLAYWRIGHT_BROWSERS_PATH="$PWD/.tools/browsers" npx playwright install chromium
-```
+## Project documentation
 
-Native tests, with the project-local toolchain:
+- [Product and architecture index](projectstructure/README.md)
+- [Data safety and portable archives](projectstructure/architecture/12-data-safety.md)
+- [Desktop build guide](docs/desktop-builds.md)
 
-```sh
-RUSTUP_HOME="$PWD/.tools/rustup" CARGO_HOME="$PWD/.tools/cargo" CARGO_TARGET_DIR="$PWD/.target" .tools/cargo/bin/cargo test -p tastellar-domain -p tastellar-storage
-```
-
-Use ordinary `cargo test` with the same package flags if Rust is installed globally. Storage tests use isolated project-local fixture directories and remove them afterward.
-
-## Structure
-
-`apps/tastellar/src`: React/TypeScript UI, contextual English messages and Home/Library features. `apps/tastellar/src-tauri`: native Tauri host and narrow commands. `crates/domain`: validation and data contracts. `crates/storage`: SQLite transactions, managed images and portable Home/Library archives. `projectstructure`: product architecture, feature specifications and current implementation notes.
-
-Start with [the specification index](projectstructure/README.md) or [the Home foundation notes](projectstructure/delivery/18-home-foundation.md).
+Tastellar has no ads or subscriptions, and every feature is free. Optional project support is available on [Boosty](https://boosty.to/tastellar).
