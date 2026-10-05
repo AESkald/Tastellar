@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use std::{
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tastellar_domain::{BatchEntryUpdateInput, RemoteCoverReference, TagInput};
@@ -16,16 +17,27 @@ use tastellar_storage::{
 };
 
 struct TestWorkspace(PathBuf);
+static TEST_WORKSPACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 impl TestWorkspace {
     fn new() -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("tastellar-import-workflow-{unique}"));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        for _ in 0..100 {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let sequence = TEST_WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "tastellar-import-workflow-{}-{timestamp}-{sequence}",
+                std::process::id(),
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed to create isolated import test workspace: {error}"),
+            }
+        }
+        panic!("could not allocate a unique import test workspace after 100 attempts")
     }
 }
 
