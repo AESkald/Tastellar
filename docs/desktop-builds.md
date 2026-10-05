@@ -12,6 +12,16 @@ npm ci
 
 Both targets also require Node.js with npm and Rust stable. If this checkout has the project-local Rust toolchain under `.tools`, the desktop build script selects it; otherwise install Rust for the host OS.
 
+Release builds include the app-managed credentials for TMDb, Google Books, IGDB, and Steam, so users do not need to enter provider API keys. The same embedded configuration is used by the macOS app and DMG and the Windows NSIS installer; users do not need a separate runtime file. A local `.runtime/provider-credentials.json` overrides the bundled defaults; `TASTELLAR_PROVIDER_CREDENTIALS_FILE` overrides both. Fresh checkouts and CI builds use the bundled defaults when the local file is absent. The checked-in defaults are split into randomized binary shares and randomized again during each build. This only deters casual string extraction: anyone who can inspect the app can recover the credentials, so treat them as public and rotate them if they are abused.
+
+After rotating the provider credentials, maintainers can refresh the bundled defaults from `.runtime/provider-credentials.json` with:
+
+```sh
+npm run provider-config:refresh
+```
+
+To use another source file, set `TASTELLAR_PROVIDER_CREDENTIALS_FILE` for that command. The refresh command validates the file and reports success without printing credential values. It updates the two binary assets in `apps/tastellar/src-tauri/private-provider-config/`; include those updated assets with the release change.
+
 ## macOS app and DMG
 
 Build on a Mac with Xcode Command Line Tools installed (`xcode-select --install`):

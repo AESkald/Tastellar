@@ -31,6 +31,7 @@ fn decode(payload: &[u8], mask: &[u8]) -> Result<Zeroizing<Vec<u8>>, StorageErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tastellar_storage::catalog_capabilities;
 
     #[test]
     fn decode_reconstructs_synthetic_json_without_plaintext_constants() {
@@ -55,6 +56,21 @@ mod tests {
 
     #[test]
     fn bundled_provider_session_loads_without_disclosing_configured_values() {
-        assert!(session().is_ok());
+        let session = session().expect("bundled provider configuration should load");
+        let capabilities = catalog_capabilities(&session);
+        for provider in ["tmdb", "googleBooks", "igdb", "steam"] {
+            let capability = capabilities
+                .iter()
+                .find(|capability| capability.provider == provider)
+                .expect("expected catalog provider capability");
+            assert!(capability.configured, "{provider} should be configured");
+        }
+        for provider in ["tmdb", "googleBooks", "igdb"] {
+            let capability = capabilities
+                .iter()
+                .find(|capability| capability.provider == provider)
+                .expect("expected catalog provider capability");
+            assert!(capability.enabled, "{provider} should be available");
+        }
     }
 }

@@ -9,20 +9,47 @@ fn main() {
 fn embed_private_provider_credentials() {
     println!("cargo:rerun-if-env-changed=TASTELLAR_PROVIDER_CREDENTIALS_FILE");
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let source = env::var_os("TASTELLAR_PROVIDER_CREDENTIALS_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("../../../.runtime/provider-credentials.json"));
-    println!("cargo:rerun-if-changed={}", source.display());
+    let local_source = manifest_dir.join("../../../.runtime/provider-credentials.json");
+    let bundled_source = manifest_dir.join("private-provider-config");
+    println!("cargo:rerun-if-changed={}", local_source.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        bundled_source.join("provider-data.bin").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        bundled_source.join("provider-mask.bin").display()
+    );
 
-    let credentials = Zeroizing::new(match fs::read(&source) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => b"[]".to_vec(),
-        Err(_) => panic!("Could not read private provider configuration"),
-    });
-    if credentials.len() > 64 * 1024
-        || serde_json::from_slice::<Vec<serde_json::Value>>(&credentials).is_err()
+    let (credentials, uses_bundled_defaults) =
+        match env::var_os("TASTELLAR_PROVIDER_CREDENTIALS_FILE") {
+            Some(source) => {
+                let source = PathBuf::from(source);
+                println!("cargo:rerun-if-changed={}", source.display());
+                (
+                    Zeroizing::new(fs::read(source).unwrap_or_else(|_| {
+                        panic!("Could not read private provider configuration")
+                    })),
+                    false,
+                )
+            }
+            None => match fs::read(&local_source) {
+                Ok(contents) => (Zeroizing::new(contents), false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    (read_bundled_provider_credentials(&bundled_source), true)
+                }
+                Err(_) => panic!("Could not read private provider configuration"),
+            },
+        };
+
+    if credentials.len() > 64 * 1024 {
+        panic!("Private provider configuration is invalid or incomplete");
+    }
+    let entries = serde_json::from_slice::<Vec<serde_json::Value>>(&credentials)
+        .unwrap_or_else(|_| panic!("Private provider configuration is invalid or incomplete"));
+    if entries.len() > 8 || (uses_bundled_defaults && !has_required_provider_credentials(&entries))
     {
-        panic!("Private provider configuration must be a JSON array no larger than 64 KB");
+        panic!("Private provider configuration is invalid or incomplete");
     }
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
@@ -31,11 +58,13 @@ fn embed_private_provider_credentials() {
     let mut mask = Zeroizing::new(vec![0u8; credentials.len()]);
     getrandom::fill(&mut mask)
         .unwrap_or_else(|_| panic!("Could not randomize private provider configuration"));
-    let payload: Vec<u8> = credentials
-        .iter()
-        .zip(mask.iter())
-        .map(|(a, b)| a ^ b)
-        .collect();
+    let payload = Zeroizing::new(
+        credentials
+            .iter()
+            .zip(mask.iter())
+            .map(|(a, b)| a ^ b)
+            .collect::<Vec<_>>(),
+    );
     for (name, bytes) in [
         ("provider-data.bin", payload.as_slice()),
         ("provider-mask.bin", mask.as_slice()),
@@ -57,4 +86,65 @@ fn embed_private_provider_credentials() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => panic!("Could not remove legacy generated provider configuration"),
     }
+}
+
+fn has_required_provider_credentials(entries: &[serde_json::Value]) -> bool {
+    if entries.len() != 4 {
+        return false;
+    }
+
+    const REQUIRED_PROVIDERS: [(&str, &[&str]); 4] = [
+        ("tmdb", &["apiKey"]),
+        ("googleBooks", &["apiKey"]),
+        ("igdb", &["clientId", "clientSecret"]),
+        ("steam", &["apiKey", "steamId64"]),
+    ];
+    for (provider, fields) in REQUIRED_PROVIDERS {
+        let Some(entry) = entries.iter().find(|entry| {
+            entry.get("provider").and_then(serde_json::Value::as_str) == Some(provider)
+        }) else {
+            return false;
+        };
+        if fields.iter().any(|field| {
+            !entry
+                .get(*field)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| {
+                    let value = value.trim();
+                    (8..=512).contains(&value.len()) && !value.chars().any(char::is_control)
+                })
+        }) {
+            return false;
+        }
+    }
+
+    entries
+        .iter()
+        .find(|entry| entry.get("provider").and_then(serde_json::Value::as_str) == Some("steam"))
+        .and_then(|entry| entry.get("steamId64"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|steam_id| {
+            steam_id.len() == 17 && steam_id.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn read_bundled_provider_credentials(directory: &PathBuf) -> Zeroizing<Vec<u8>> {
+    let payload = Zeroizing::new(
+        fs::read(directory.join("provider-data.bin"))
+            .unwrap_or_else(|_| panic!("Bundled private provider configuration is unavailable")),
+    );
+    let mask = Zeroizing::new(
+        fs::read(directory.join("provider-mask.bin"))
+            .unwrap_or_else(|_| panic!("Bundled private provider configuration is unavailable")),
+    );
+    if payload.len() != mask.len() || payload.len() > 64 * 1024 {
+        panic!("Bundled private provider configuration is invalid");
+    }
+    Zeroizing::new(
+        payload
+            .iter()
+            .zip(mask.iter())
+            .map(|(a, b)| a ^ b)
+            .collect(),
+    )
 }
