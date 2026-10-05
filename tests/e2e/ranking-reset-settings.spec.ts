@@ -11,7 +11,7 @@ test("ranking reset is separately confirmed and preserves library works and scor
     .click();
   const editor = page.getByRole("dialog", { name: "Add work" });
   await editor.getByPlaceholder("Media title").fill("Ranking reset keeps me");
-  await editor.getByLabel("Media type").click();
+  await editor.getByRole("combobox", { name: "Media type", exact: true }).click();
   await page.getByRole("option", { name: "Animation", exact: true }).click();
   await editor.getByLabel("Disposition").click();
   await page.getByRole("option", { name: "Already experienced", exact: true }).click();

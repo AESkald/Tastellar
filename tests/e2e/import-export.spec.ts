@@ -1,15 +1,18 @@
 import { expect, test, type Locator } from "@playwright/test";
 
-async function expectImportBeforeExport(panel: Locator) {
+async function expectImportBeforeExport(panel: Locator, hasServiceImport = false) {
   const buttons = panel.locator(".transfer-actions > button");
   await expect(buttons).toHaveText([
+    ...(hasServiceImport ? ["Import from services"] : []),
     "Import library archive",
     "Export library archive",
   ]);
-  await expect(buttons.nth(0)).toHaveClass(/button primary/);
-  await expect(buttons.nth(1)).toHaveClass(/button secondary/);
-  await expect(buttons.nth(0).locator("svg")).toHaveClass(/lucide-download/);
-  await expect(buttons.nth(1).locator("svg")).toHaveClass(/lucide-upload/);
+  const archiveImport = buttons.nth(hasServiceImport ? 1 : 0);
+  const archiveExport = buttons.nth(hasServiceImport ? 2 : 1);
+  await expect(archiveImport).toHaveClass(/button primary/);
+  await expect(archiveExport).toHaveClass(/button secondary/);
+  await expect(archiveImport.locator("svg")).toHaveClass(/lucide-download/);
+  await expect(archiveExport.locator("svg")).toHaveClass(/lucide-upload/);
 }
 
 test("Settings and Library expose the same story-inclusive archive controls", async ({
@@ -23,7 +26,7 @@ test("Settings and Library expose the same story-inclusive archive controls", as
     .click();
 
   const libraryPanel = page.locator(".transfer-panel");
-  await expectImportBeforeExport(libraryPanel);
+  await expectImportBeforeExport(libraryPanel, true);
   await expect(libraryPanel).toContainText(
     "all stories, ratings, tags, and media types",
   );

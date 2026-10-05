@@ -96,7 +96,10 @@ test("Home editing, explicit radar, guidelines and recommendation prompt", async
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
     "Quiet worlds",
   );
-  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Prompt made for you" })
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
   await page.locator(".content-scroll").evaluate((el) => {
     el.scrollTop = 0;
   });
@@ -311,12 +314,10 @@ test("Theme choices, shortcuts, multiple tabs and deliberately empty sections", 
   await expect(
     page.getByRole("complementary", { name: "Library groups and search" }),
   ).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Toggle details panel", exact: true })
-    .click();
-  await expect(
-    page.getByRole("heading", { name: "A space for the details" }),
-  ).toBeVisible();
+  await expect(page.locator(".titlebar .panel-toggle")).toHaveCount(2);
+  await expect(page.locator(".titlebar .left-sidebar-toggle")).toBeHidden();
+  await expect(page.locator(".titlebar .panel-toggle:not(.left-sidebar-toggle)")).toBeHidden();
+  await expect(page.locator(".app-empty-left-sidebar, .details-shell")).toHaveCount(0);
 });
 
 test("Workspace tabs reorder with a pointer drag while clicks still activate", async ({
@@ -443,6 +444,11 @@ test("sidebar visibility can be remembered per tab or shared globally", async ({
   const tabs = page.getByRole("tablist", { name: "Workspace tabs" });
   const left = page.locator(".titlebar .left-sidebar-toggle");
   const right = page.locator(".titlebar .panel-toggle:not(.left-sidebar-toggle)");
+  const primaryNavigation = page.locator(".primary-navigation");
+
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
+  await expect(page.locator(".app-empty-left-sidebar, .details-shell")).toHaveCount(0);
   await expect(left).toHaveAttribute("aria-pressed", "true");
   await expect(right).toHaveAttribute("aria-pressed", "false");
 
@@ -455,19 +461,49 @@ test("sidebar visibility can be remembered per tab or shared globally", async ({
   await page.getByRole("button", { name: "New tab", exact: true }).click();
   await page.locator(".tab-chooser").getByRole("button", { name: "Home", exact: true }).click();
   await expect(tabs.getByRole("tab")).toHaveCount(2);
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
+
+  await primaryNavigation.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(left).toBeVisible();
+  await expect(right).toBeVisible();
+  await expect(left).toHaveAttribute("aria-pressed", "true");
+  await expect(right).toHaveAttribute("aria-pressed", "false");
   await left.click();
   await right.click();
   await expect(left).toHaveAttribute("aria-pressed", "false");
   await expect(right).toHaveAttribute("aria-pressed", "true");
+  await primaryNavigation.getByRole("button", { name: "Home", exact: true }).click();
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
+  await expect(page.locator(".app-empty-left-sidebar, .details-shell")).toHaveCount(0);
 
   await tabs.getByRole("tab").nth(0).click();
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
   await expect(left).toHaveAttribute("aria-pressed", "true");
   await expect(right).toHaveAttribute("aria-pressed", "false");
+  await primaryNavigation.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(left).toBeVisible();
+  await expect(right).toBeVisible();
+  await expect(left).toHaveAttribute("aria-pressed", "true");
+  await expect(right).toHaveAttribute("aria-pressed", "false");
+
   await tabs.getByRole("tab").nth(1).click();
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
+  await expect(left).toHaveAttribute("aria-pressed", "false");
+  await expect(right).toHaveAttribute("aria-pressed", "true");
+  await primaryNavigation.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(left).toBeVisible();
+  await expect(right).toBeVisible();
   await expect(left).toHaveAttribute("aria-pressed", "false");
   await expect(right).toHaveAttribute("aria-pressed", "true");
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
+  await expect(page.locator(".app-empty-left-sidebar, .details-shell")).toHaveCount(0);
   await page.getByRole("navigation", { name: "Settings categories" }).getByRole("button", { name: "Your workspace" }).click();
   const remember = page.getByRole("switch", { name: "Remember sidebar visibility per tab", exact: true });
   await expect(remember).toHaveAttribute("aria-checked", "true");
@@ -475,15 +511,28 @@ test("sidebar visibility can be remembered per tab or shared globally", async ({
   await expect(remember).toHaveAttribute("aria-checked", "false");
 
   await tabs.getByRole("tab").nth(0).click();
+  await expect(left).toBeVisible();
+  await expect(right).toBeVisible();
   await expect(left).toHaveAttribute("aria-pressed", "false");
   await expect(right).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("navigation", { name: "Settings categories" }).getByRole("button", { name: "Your workspace" }).click();
   await page.getByRole("switch", { name: "Remember sidebar visibility per tab", exact: true }).click();
-  await tabs.getByRole("tab").nth(0).click();
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
+  await primaryNavigation.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(left).toBeVisible();
+  await expect(right).toBeVisible();
   await expect(left).toHaveAttribute("aria-pressed", "true");
   await expect(right).toHaveAttribute("aria-pressed", "false");
   await tabs.getByRole("tab").nth(1).click();
+  await expect(left).toBeHidden();
+  await expect(right).toBeHidden();
+  await expect(left).toHaveAttribute("aria-pressed", "false");
+  await expect(right).toHaveAttribute("aria-pressed", "true");
+  await primaryNavigation.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(left).toBeVisible();
+  await expect(right).toBeVisible();
   await expect(left).toHaveAttribute("aria-pressed", "false");
   await expect(right).toHaveAttribute("aria-pressed", "true");
 });

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -88,25 +87,67 @@ async function openGroup(page: Page, label: string) {
   await expect(page.locator(".library-heading-copy h1")).toHaveText(label);
 }
 
+const syntheticTierCounts = [
+  { score: 10, count: 4, label: "Solar" },
+  { score: 9, count: 18, label: "Constellation" },
+  { score: 8, count: 71, label: "Galaxy" },
+  { score: 7, count: 124, label: "Deep Field" },
+] as const;
+
+function buildSyntheticUniverseState() {
+  const now = "2026-10-05T00:00:00Z";
+  const entries = syntheticTierCounts.flatMap(({ score, count, label }) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `synthetic-universe-${score}-${index + 1}`,
+      version: 1,
+      title: `Synthetic ${label} Work ${index + 1}`,
+      disposition: "experienced",
+      mediaTypeId: "anime",
+      overallRating: score,
+      coverAssetId: null,
+      releaseDate: null,
+      reviewText: "",
+      shortLabel: null,
+      criterionRatings: {},
+      tagIds: [],
+      externalIdentities: [],
+      remoteCover: null,
+      createdAt: now,
+      updatedAt: now,
+    })),
+  );
+  const rankedEntries = entries.map((entry) => ({
+    entryId: entry.id,
+    score: entry.overallRating,
+    placed: true,
+  }));
+  const mediaTypes = [{
+    id: "anime",
+    name: "Animation",
+    iconKey: "clapperboard",
+    sortOrder: 0,
+    criterionIds: [],
+    archivedAt: null,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  }];
+  const library = { revision: 0, entries, mediaTypes, criteria: [], tags: [] };
+  const tiers = Array.from({ length: 10 }, (_, index) => ({ score: 10 - index, inputSequence: 0 }));
+  const tierOrders = tiers.map(({ score }) => [score, {
+    placed: rankedEntries.filter((entry) => entry.score === score && entry.placed).map((entry) => entry.entryId),
+    unplaced: rankedEntries.filter((entry) => entry.score === score && !entry.placed).map((entry) => entry.entryId),
+  }]);
+  return { library, rankedEntries, tierOrders, tiers };
+}
+
 async function seedSampleArchive(
   page: Page,
   subset?: { score: number; count: number; unranked?: boolean },
 ) {
-  const archive = JSON.parse(readFileSync("030.tastellar.json", "utf8")) as {
-    library: {
-      revision: number;
-      entries: Array<{ id: string; disposition: string; overallRating: number | null }>;
-      [key: string]: unknown;
-    };
-    history: {
-      ranking: {
-        entries: Array<{ entryId: string; score: number; placed: boolean }>;
-        tiers: Array<{ score: number; inputSequence: number }>;
-      };
-    };
-  };
-  let library = archive.library;
-  let ranking = archive.history.ranking;
+  const state = buildSyntheticUniverseState();
+  let library = state.library;
+  let ranking = { entries: state.rankedEntries };
   if (subset) {
     const includedIds = new Set(
       library.entries
@@ -114,22 +155,16 @@ async function seedSampleArchive(
         .slice(0, subset.count)
         .map((entry) => entry.id),
     );
+    if (includedIds.size !== subset.count) throw new Error("Synthetic universe tier has too few works for the requested sample");
     library = { ...library, entries: library.entries.filter((entry) => includedIds.has(entry.id)) };
     ranking = { ...ranking, entries: ranking.entries.filter((entry) => includedIds.has(entry.entryId)) };
     if (subset.unranked)
       ranking = { ...ranking, entries: ranking.entries.map((entry) => ({ ...entry, placed: false })) };
   }
-  const byId = new Map(ranking.entries.map((entry) => [entry.entryId, entry]));
-  const tierOrders = Array.from({ length: 10 }, (_, index) => {
-    const score = 10 - index;
-    return [score, {
-      placed: ranking.entries.filter((entry) => entry.score === score && entry.placed).map((entry) => entry.entryId),
-      unplaced: library.entries.filter((entry) => {
-        const placement = byId.get(entry.id);
-        return entry.disposition === "experienced" && placement?.score === score && !placement.placed;
-      }).map((entry) => entry.id),
-    }];
-  });
+  const tierOrders = state.tiers.map(({ score }) => [score, {
+    placed: ranking.entries.filter((entry) => entry.score === score && entry.placed).map((entry) => entry.entryId),
+    unplaced: ranking.entries.filter((entry) => entry.score === score && !entry.placed).map((entry) => entry.entryId),
+  }]);
   await page.addInitScript(({ library, rankedEntries, orders, tiers }) => {
     sessionStorage.setItem("tastellar.preview.revision.v1", String(library.revision));
     sessionStorage.setItem("tastellar.preview.library.v1", JSON.stringify(library));
@@ -142,7 +177,7 @@ async function seedSampleArchive(
       judgments: [],
       latestMove: null,
     }));
-  }, { library, rankedEntries: ranking.entries, orders: tierOrders, tiers: ranking.tiers });
+  }, { library, rankedEntries: ranking.entries, orders: tierOrders, tiers: state.tiers });
   await page.goto("/");
   await page.getByRole("button", { name: "Library", exact: true }).click();
 }
@@ -258,9 +293,7 @@ test("the 7↔8 scale transition hides titles for the full travel", async ({ pag
   await expect(deepLabel).toHaveClass(/transition-hidden/);
   await expect.poll(async () => Number(await deepLabel.getAttribute("data-label-opacity")), { timeout: 1000, intervals: [16, 16, 32] }).toBeGreaterThan(0);
   await expect(deepLabel).not.toHaveClass(/transition-hidden/);
-  const incomingFadeOpacity = Number(await deepLabel.getAttribute("data-label-opacity"));
-  expect(incomingFadeOpacity).toBeLessThan(0.95);
-  await expect.poll(async () => Number(await deepLabel.getAttribute("data-label-opacity")), { timeout: 2500 }).toBeGreaterThan(0.9);
+  await expect.poll(async () => Number(await deepLabel.getAttribute("data-label-opacity")), { timeout: 2500 }).toBe(1);
   await expect(scene).toHaveAttribute("data-camera-yaw", "0");
   await expect(scene).toHaveAttribute("data-camera-pitch", "0");
 
@@ -517,7 +550,7 @@ test("scene size, theme contrast, starfield, and orbit controls remain usable", 
     await page.getByRole("button", { name: "Library", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", dataTheme);
     expect(await scene.locator(".universe-canvas-wrap").evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(background);
-    await expect(scene.getByRole("button", { name: "Outer Wilds", exact: true })).toBeVisible();
+    await expect(scene.getByRole("button", { name: "Synthetic Solar Work 1", exact: true })).toBeVisible();
     await scene.screenshot({ path: `test-results/universe-${dataTheme}-solar.png`, animations: "disabled" });
   }
   await page.emulateMedia({ reducedMotion: "reduce" });

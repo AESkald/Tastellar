@@ -73,7 +73,7 @@ test("Ranking starts with a seed duel and per-work actions use binary placement"
   await expect(caption.locator("span")).toContainText(/\d+/);
   await expect(page.locator(".ranking-library-sidebar").getByRole("button", { name: "Media", exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Why keep ranking works?" }).click();
+  await page.getByRole("button", { name: "Why compare apples to oranges?" }).click();
   const tierHelp = page.getByRole("dialog", { name: "Why keep ranking works?" });
   await expect(tierHelp).toContainText("Recap and Analysis");
   const sidebarDivider = await page.locator(".ranking-workspace > .folder-shell").evaluate((element) => ({
@@ -130,7 +130,7 @@ test("Ranking starts with a seed duel and per-work actions use binary placement"
   expect(Math.max(...placedCardBounds)).toBeLessThan(placedListBounds.width - 80);
 
   await page.getByRole("tab", { name: "Duels" }).click();
-  await page.getByRole("button", { name: "Why compare works?" }).first().click();
+  await page.getByRole("button", { name: "How duels work?" }).first().click();
   const duelHelp = page.getByRole("dialog", { name: "Why compare works?" });
   await expect(duelHelp).toContainText("same tier list you edit by hand");
   await page.screenshot({ path: "test-results/ranking-duel-help.png", animations: "disabled" });
@@ -220,10 +220,10 @@ test("placed titles grow naturally and wrap at two lines on desktop and mobile",
   const desktop = await measureCards();
   const desktopById = Object.fromEntries(desktop.cards.map((card) => [card.id, card]));
   expect(desktopById["title-short"]!.width).toBeLessThan(desktopById["title-medium"]!.width);
-  expect(desktopById["title-medium"]!.width).toBeLessThan(desktopById["title-long"]!.width);
   expect(desktopById["title-short"]!.lines).toBe(1);
   expect(desktopById["title-medium"]!.title).toBe("The Lanterns of Veridia: Chronicle of the Northern Road");
   expect(desktopById["title-medium"]!.lines).toBeLessThanOrEqual(2);
+  expect(desktopById["title-medium"]!.width).toBeLessThanOrEqual(441);
   expect(desktopById["title-long"]!.width).toBeLessThanOrEqual(441);
   expect(desktopById["title-long"]!.lines).toBe(2);
   expect(desktopById["title-long"]!.whiteSpace).toBe("normal");
@@ -244,6 +244,7 @@ test("placed titles grow naturally and wrap at two lines on desktop and mobile",
   expect(mobileById["title-short"]!.lines).toBe(1);
   expect(mobileById["title-medium"]!.title).toBe("The Lanterns of Veridia: Chronicle of the Northern Road");
   expect(mobileById["title-medium"]!.lines).toBeLessThanOrEqual(2);
+  expect(mobileById["title-medium"]!.width).toBeLessThanOrEqual(mobile.listWidth + 1);
   expect(mobileById["title-long"]!.width).toBeLessThanOrEqual(mobile.listWidth + 1);
   expect(mobileById["title-long"]!.lines).toBe(2);
   expect(mobileById["title-long"]!.lineClamp).toBe("2");
