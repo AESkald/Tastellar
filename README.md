@@ -7,22 +7,22 @@ Tastellar is a free, ad-free desktop app for keeping track of films, TV, animati
 [Download for Windows and Mac OS](https://github.com/AESkald/Tastellar/releases/tag/newVersion)
 ## What you can do with it
 
-###### Keep a customizable, organized library that presents your ratings as beautiful 3D scenes.
+__Keep a customizable, organized library that presents your ratings as beautiful 3D scenes.
 
 ![Tastellar media library](<docs/screenshots for readme/-3.png>)
 ![Ratings displayed as a 3D scene](<docs/screenshots for readme/Снимок экрана 2026-10-06 в 11.30.28.png>)
 
-###### After rating works from 1 to 10, arrange media in the tier list by hand or through head-to-head comparisons called Duels.
+__After rating works from 1 to 10, arrange media in the tier list by hand or through head-to-head comparisons called Duels.
 
 ![Tier list](<docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.13.44.png>)
 ![Duels](<docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.14.31.png>)
 
-###### Explore your ratings and rankings in Analytics, then design and export shareable Recap images from your library.
+__Explore your ratings and rankings in Analytics, then design and export shareable Recap images from your library.
 
 ![Analytics](<docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.16.13.png>)
 ![Recap](<docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.19.38.png>)
 
-###### Import lists from Letterboxd ZIP, IMDb CSV, Goodreads CSV, MyAnimeList XML or XML.gz, supported CSV/TSV files, and one-title-per-line text files. Steam owned games can be imported through Steam's API.
+__Import lists from Letterboxd ZIP, IMDb CSV, Goodreads CSV, MyAnimeList XML or XML.gz, supported CSV/TSV files, and one-title-per-line text files. Steam owned games can be imported through Steam's API.
 
 ![Import options](<docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.18.40.png>)
 
