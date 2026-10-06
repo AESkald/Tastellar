@@ -11,12 +11,14 @@
             "id": "ee207e93f0667914",
             "type": "leaf",
             "state": {
-              "type": "image",
+              "type": "markdown",
               "state": {
-                "file": "docs/screenshots for readme/-3.png"
+                "file": "README.md",
+                "mode": "source",
+                "source": false
               },
-              "icon": "lucide-image",
-              "title": "-3"
+              "icon": "lucide-file",
+              "title": "README"
             }
           }
         ]
@@ -186,12 +188,12 @@
       "bases:Создать новую базу": false
     }
   },
-  "active": "0aeef1c120b59877",
+  "active": "ee207e93f0667914",
   "lastOpenFiles": [
+    "docs/screenshots for readme/-3.png",
     "docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.19.38.png",
     "README.md",
     "-1.png",
-    "docs/screenshots for readme/-3.png",
     "docs/screenshots for readme/Снимок экрана 2026-10-06 в 11.30.28.png",
     "docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.14.31.png",
     "docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.13.44.png",

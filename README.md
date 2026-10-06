@@ -9,15 +9,15 @@ Tastellar is a free, ad-free desktop app for keeping track of films, TV, animati
 
 ###### Keep a castomizable, organized library that presents your ratings as beautiful 3d scenes
 ![[-3.png]]
-![[Снимок экрана 2026-10-06 в 11.30.28.png]]
+![[docs/screenshots for readme/Снимок экрана 2026-10-06 в 11.30.28.png]]
 ###### After rating works from 1 to 10, arrange media in the tier list by hand or through head-to-head comparisons called **Duels**.
-![[Снимок экрана 2026-10-06 в 18.13.44.png]]
-![[Снимок экрана 2026-10-06 в 18.14.31.png]]
+![[docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.13.44.png]]
+![[docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.14.31.png]]
 ###### Explore your ratings and rankings in **Analytics**, then design and export shareable **Recap** images from your library.
-![[Снимок экрана 2026-10-06 в 18.16.13.png]]
-![[Снимок экрана 2026-10-06 в 18.19.38.png]]
+![[docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.16.13.png]]
+![[docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.19.38.png]]
 Import lists from Letterboxd ZIP, IMDb CSV, Goodreads CSV, MyAnimeList XML or XML.gz, supported CSV/TSV files, and one-title-per-line text files. Steam owned games can be imported through Steam's API.
-![[Снимок экрана 2026-10-06 в 18.18.40.png]]
+![[docs/screenshots for readme/Снимок экрана 2026-10-06 в 18.18.40.png]]
 
 Manual entry and local file imports work without provider credentials. Some catalog searches and the Steam import require credentials you supply yourself; add them through API settings in **Add work** or **Import**. Tastellar does not include bundled provider keys.
 
