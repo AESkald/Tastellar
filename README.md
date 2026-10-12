@@ -28,8 +28,6 @@ __Import lists from Letterboxd ZIP, IMDb CSV, Goodreads CSV, MyAnimeList XML or 
 
 Manual entry and local file imports work without provider credentials. Some catalog searches and the Steam import require credentials you supply yourself; add them through API settings in Add work or Import. Tastellar does not include bundled provider keys.
 
-Tastellar has no ads or subscriptions, and every feature is free. Optional project support is available on [Boosty](https://boosty.to/tastellar).
-
 ## Your library stays yours
 
 The desktop app stores your library on your device in SQLite. You can export and restore a portable `.tastellar.json` archive. If you have configured provider credentials, they are included in that archive as plain text, so keep exported archives private. Provider credentials are saved locally and are not included in Tastellar builds.
@@ -86,3 +84,5 @@ The [CI workflow](.github/workflows/checks.yml) also covers browser end-to-end c
 - [Product and architecture index](projectstructure/README.md)
 - [Data safety and portable archives](projectstructure/architecture/12-data-safety.md)
 - [Desktop build guide](docs/desktop-builds.md)
+
+Tastellar has no ads or subscriptions, and every feature is free. Optional project support is available on [Boosty](https://boosty.to/tastellar).
