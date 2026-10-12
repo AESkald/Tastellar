@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Entry, MediaType } from "../../shared/bridge/libraryTypes";
-import { createRecapComposition, recapSupportsOrientation, updateRecapComposition, type RecapTemplateId } from "../../features/recap/domain/recap";
+import { createRecapComposition, getRecapPeriodPosterGrid, recapSupportsOrientation, updateRecapComposition, type RecapTemplateId } from "../../features/recap/domain/recap";
+import { refreshRecapCoverReferences } from "../../features/recap/coverReferences";
 import { findRecapHitTarget, getRecapExportDimensions, layoutRecapScene, loadRecapScene, recapPageCount, resolveRecapSceneCovers, RECAP_EXPORT_MAX_DIMENSION, RECAP_EXPORT_MAX_PIXELS, RECAP_EXPORT_TARGET_LONG_EDGE, RECAP_MAX_DIMENSION } from "./renderer";
 
 const types: MediaType[] = Array.from({ length: 7 }, (_, index) => ({
@@ -126,6 +127,30 @@ function expectSceneGeometry(template: RecapTemplateId, orientation: "portrait" 
 }
 
 describe("Recap Canvas2D layout scene", () => {
+  it("passes refreshed library asset references into the preview cover loader", async () => {
+    const saved = composition("topTen");
+    const currentEntries = entries.map((entry) => ({
+      ...entry,
+      coverAssetId: `current:${entry.id}`,
+    }));
+    const refreshed = refreshRecapCoverReferences(saved, currentEntries);
+    const requests: Array<[string, string | null]> = [];
+
+    await resolveRecapSceneCovers(
+      layoutRecapScene(refreshed),
+      refreshed,
+      async (entryId, assetId) => {
+        requests.push([entryId, assetId]);
+        return null;
+      },
+    );
+
+    expect(requests).toHaveLength(refreshed.slots.filter((slot) => slot.entry).length);
+    for (const [entryId, assetId] of requests) {
+      expect(assetId).toBe(`current:${entryId}`);
+    }
+  });
+
   it("derives both Top Ten canvases from full-bleed 2:3 portrait covers", () => {
     for (const orientation of ["portrait", "landscape"] as const) {
       const model = composition("topTen", orientation);
@@ -146,6 +171,51 @@ describe("Recap Canvas2D layout scene", () => {
         expect(scene.height).toBeGreaterThan(scene.width);
       }
       expectSceneGeometry("topTen", orientation);
+    }
+  });
+
+  it("loads the newest complete release-year poster in one export", async () => {
+    const originalImage = globalThis.Image;
+    class ExportImage {
+      decoding = "";
+      naturalWidth = 600;
+      naturalHeight = 900;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode() { return Promise.resolve(); }
+      set src(_value: string) { this.onload?.(); }
+    }
+    globalThis.Image = ExportImage as unknown as typeof Image;
+    try {
+      const model = denseYearComposition(2005, 2026);
+      expect(recapPageCount(model)).toBe(1);
+      const visibleSlots = model.slots.slice(-21);
+      expect(visibleSlots.map((slot) => slot.label)).toEqual(
+        Array.from({ length: 21 }, (_, index) => String(2006 + index)),
+      );
+
+      const exportComposition = {
+        ...model,
+        slots: model.slots.map((slot) => slot.entry
+          ? { ...slot, entry: { ...slot.entry, coverAssetId: `poster-export-${slot.entry.id}` } }
+          : slot),
+      };
+      const scene = await loadRecapScene(
+        exportComposition,
+        async (entryId) => `data:image/png;base64,${entryId}`,
+      );
+      expect(scene.pageIndex).toBe(0);
+      expect(scene.pageCount).toBe(1);
+      expect(scene.hitTargets.map((target) => target.slotId)).toEqual(visibleSlots.map((slot) => slot.id));
+      expect(scene.nodes.filter((node) => node.kind === "image").map((node) => node.entryId)).toEqual(
+        visibleSlots.map((slot) => slot.entry!.id),
+      );
+      const labels = scene.nodes.filter((node) => node.kind === "text").map((node) => node.text);
+      expect(labels).toContain("2006");
+      expect(labels).toContain("2026");
+      expect(labels).not.toContain("2005");
+    } finally {
+      globalThis.Image = originalImage;
     }
   });
 
@@ -207,6 +277,203 @@ describe("Recap Canvas2D layout scene", () => {
     expect(resolved.nodes.some((node) => node.kind === "placeholder" && node.entryId === heroId)).toBe(true);
     expect(resolved.hitTargets).toEqual(pending.hitTargets);
     expect(pending.nodes.some((node) => node.kind === "image" && node.entryId === heroId)).toBe(true);
+  });
+
+  it("publishes decoded covers as they arrive instead of waiting for every cover", async () => {
+    const originalImage = globalThis.Image;
+    class LoadedImage {
+      decoding = "";
+      naturalWidth = 600;
+      naturalHeight = 900;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode() { return Promise.resolve(); }
+      set src(_value: string) { this.onload?.(); }
+    }
+    globalThis.Image = LoadedImage as unknown as typeof Image;
+    let resolveFirst!: (value: string) => void;
+    let resolveSecond!: (value: string) => void;
+    const first = new Promise<string>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<string>((resolve) => { resolveSecond = resolve; });
+    try {
+      const model = composition("topTen");
+      const firstEntry = model.slots[0].entry!;
+      const secondEntry = model.slots[1].entry!;
+      const withAssets = {
+        ...model,
+        slots: model.slots.map((slot, index) => index === 0
+          ? { ...slot, entry: { ...slot.entry!, coverAssetId: "progress-asset-a" } }
+          : index === 1
+            ? { ...slot, entry: { ...slot.entry!, coverAssetId: "progress-asset-b" } }
+            : slot),
+      };
+      const progress: Awaited<ReturnType<typeof layoutRecapScene>>[] = [];
+      const loading = resolveRecapSceneCovers(
+        layoutRecapScene(withAssets),
+        withAssets,
+        (_entryId, assetId) => assetId === "progress-asset-a" ? first : second,
+        (scene) => progress.push(scene),
+      );
+
+      expect(progress[0].nodes.some((node) => node.kind === "placeholder" && node.entryId === firstEntry.id)).toBe(true);
+      expect(progress[0].nodes.some((node) => node.kind === "placeholder" && node.entryId === secondEntry.id)).toBe(true);
+
+      resolveFirst("data:image/png;base64,progress-a");
+      await vi.waitFor(() => {
+        expect(progress.some((scene) =>
+          scene.nodes.some((node) => node.kind === "image" && node.entryId === firstEntry.id && node.image instanceof LoadedImage) &&
+          scene.nodes.some((node) => node.kind === "placeholder" && node.entryId === secondEntry.id),
+        )).toBe(true);
+      });
+
+      resolveSecond("data:image/png;base64,progress-b");
+      const complete = await loading;
+      expect(complete.nodes.some((node) => node.kind === "image" && node.entryId === firstEntry.id && node.image instanceof LoadedImage)).toBe(true);
+      expect(complete.nodes.some((node) => node.kind === "image" && node.entryId === secondEntry.id && node.image instanceof LoadedImage)).toBe(true);
+    } finally {
+      globalThis.Image = originalImage;
+    }
+  });
+
+  it("waits for asynchronous image decoding before publishing a cover", async () => {
+    const originalImage = globalThis.Image;
+    let finishDecode!: () => void;
+    class DelayedDecodeImage {
+      decoding = "";
+      naturalWidth = 600;
+      naturalHeight = 900;
+      complete = true;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode() {
+        return new Promise<void>((resolve) => { finishDecode = resolve; });
+      }
+      set src(_value: string) { this.onload?.(); }
+    }
+    globalThis.Image = DelayedDecodeImage as unknown as typeof Image;
+    try {
+      const model = composition("topTen");
+      const hero = model.slots[0].entry!;
+      const withAsset = {
+        ...model,
+        slots: model.slots.map((slot, index) => index === 0
+          ? { ...slot, entry: { ...slot.entry!, coverAssetId: "delayed-decode-asset" } }
+          : slot),
+      };
+      const progress: Awaited<ReturnType<typeof layoutRecapScene>>[] = [];
+      let settled = false;
+      const loading = resolveRecapSceneCovers(
+        layoutRecapScene(withAsset),
+        withAsset,
+        async () => "data:image/png;base64,delayed-decode",
+        (scene) => progress.push(scene),
+      ).then((scene) => {
+        settled = true;
+        return scene;
+      });
+
+      await vi.waitFor(() => expect(finishDecode).toBeTypeOf("function"));
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(progress.at(-1)?.nodes.some((node) =>
+        node.kind === "placeholder" && node.entryId === hero.id,
+      )).toBe(true);
+
+      finishDecode();
+      const loaded = await loading;
+      expect(loaded.nodes.some((node) =>
+        node.kind === "image" && node.entryId === hero.id && node.image instanceof DelayedDecodeImage,
+      )).toBe(true);
+    } finally {
+      globalThis.Image = originalImage;
+    }
+  });
+
+  it("replaces a decoded cover when its stable asset key now resolves to new bytes", async () => {
+    const originalImage = globalThis.Image;
+    class SourcedImage {
+      decoding = "";
+      naturalWidth = 600;
+      naturalHeight = 900;
+      source = "";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode() { return Promise.resolve(); }
+      set src(value: string) {
+        this.source = value;
+        this.onload?.();
+      }
+    }
+    globalThis.Image = SourcedImage as unknown as typeof Image;
+    try {
+      const model = composition("topTen");
+      const hero = model.slots[0].entry!;
+      const withAsset = {
+        ...model,
+        slots: model.slots.map((slot, index) => index === 0
+          ? { ...slot, entry: { ...slot.entry!, coverAssetId: "stable-preview-asset" } }
+          : slot),
+      };
+      const layout = layoutRecapScene(withAsset);
+      const first = await resolveRecapSceneCovers(
+        layout,
+        withAsset,
+        async () => "data:image/png;base64,first-cover-bytes",
+        undefined,
+        { imageCacheKeySuffix: "preview" },
+      );
+      const second = await resolveRecapSceneCovers(
+        layout,
+        withAsset,
+        async () => "data:image/png;base64,replacement-cover-bytes",
+        undefined,
+        { imageCacheKeySuffix: "preview" },
+      );
+      const firstImage = first.nodes.find((node) => node.kind === "image" && node.entryId === hero.id);
+      const secondImage = second.nodes.find((node) => node.kind === "image" && node.entryId === hero.id);
+      expect(firstImage?.kind).toBe("image");
+      expect(secondImage?.kind).toBe("image");
+      if (firstImage?.kind !== "image" || secondImage?.kind !== "image") throw new Error("Expected loaded cover nodes");
+      expect(secondImage.image).not.toBe(firstImage.image);
+      expect((secondImage.image as unknown as SourcedImage).source).toBe("data:image/png;base64,replacement-cover-bytes");
+    } finally {
+      globalThis.Image = originalImage;
+    }
+  });
+
+  it("falls back to a successfully loaded image when decode rejects", async () => {
+    const originalImage = globalThis.Image;
+    class DecodeRejectingImage {
+      decoding = "";
+      naturalWidth = 600;
+      naturalHeight = 900;
+      complete = true;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      decode() { return Promise.reject(new Error("decode unavailable")); }
+      set src(_value: string) { this.onload?.(); }
+    }
+    globalThis.Image = DecodeRejectingImage as unknown as typeof Image;
+    try {
+      const model = composition("topTen");
+      const hero = model.slots[0].entry!;
+      const withAsset = {
+        ...model,
+        slots: model.slots.map((slot, index) => index === 0
+          ? { ...slot, entry: { ...slot.entry!, coverAssetId: "decode-reject-asset" } }
+          : slot),
+      };
+      const loaded = await resolveRecapSceneCovers(
+        layoutRecapScene(withAsset),
+        withAsset,
+        async () => "data:image/png;base64,decode-reject-fallback",
+      );
+      expect(loaded.nodes.some((node) =>
+        node.kind === "image" && node.entryId === hero.id && node.image instanceof DecodeRejectingImage,
+      )).toBe(true);
+    } finally {
+      globalThis.Image = originalImage;
+    }
   });
 
   it("loads provider covers through the same canvas-safe image path as local assets", async () => {
@@ -337,9 +604,9 @@ describe("Recap Canvas2D layout scene", () => {
 
   it("keeps each period grid rectangular and shows population counts with cover titles disabled", () => {
     const expectedShapes: Record<number, { landscape: [number, number]; portrait: [number, number] }> = {
-      2: { landscape: [2, 1], portrait: [1, 2] },
-      3: { landscape: [3, 1], portrait: [1, 3] },
-      4: { landscape: [4, 1], portrait: [2, 2] },
+      2: { landscape: [1, 2], portrait: [1, 2] },
+      3: { landscape: [1, 3], portrait: [1, 3] },
+      4: { landscape: [2, 2], portrait: [1, 4] },
       6: { landscape: [3, 2], portrait: [2, 3] },
       8: { landscape: [4, 2], portrait: [2, 4] },
       9: { landscape: [3, 3], portrait: [3, 3] },
@@ -353,7 +620,8 @@ describe("Recap Canvas2D layout scene", () => {
         const columns = new Set(scene.hitTargets.map(({ x }) => x)).size;
         const rows = new Set(scene.hitTargets.map(({ y }) => y)).size;
         expect([columns, rows]).toEqual(expected[orientation]);
-        expect(scene.hitTargets).toHaveLength(count);
+        const expectedCount = getRecapPeriodPosterGrid(count, orientation).count;
+        expect(scene.hitTargets).toHaveLength(expectedCount);
         expect(scene.nodes.some((node) => node.kind === "text" && node.text === "5 rated works")).toBe(true);
         expect(scene.hitTargets.every((target) => Math.abs(target.width / target.height - 2 / 3) < 0.01)).toBe(true);
         expect(scene.nodes.filter((node) => node.kind === "image").every((node) => node.fit === "contain")).toBe(true);
@@ -381,25 +649,64 @@ describe("Recap Canvas2D layout scene", () => {
     expect(Math.max(preview.width, preview.height)).toBeLessThan(RECAP_EXPORT_TARGET_LONG_EDGE);
   });
 
-  it("caps a 37-year history at twelve consecutive years and includes the current 2020s", () => {
+  it("keeps a large consecutive history to one poster and retains the current 2020s", () => {
     const model = denseYearComposition(1990, 2026);
-    expect(model.slots).toHaveLength(12);
-    expect(model.slots[0].label).toBe("2015");
+    expect(model.slots).toHaveLength(37);
+    expect(model.slots[0].label).toBe("1990");
     expect(model.slots.at(-1)?.label).toBe("2026");
     expect(model.slots.every(({ populationCount }) => populationCount === 5)).toBe(true);
-    const scene = layoutRecapScene(model);
-    expect(scene.hitTargets).toHaveLength(12);
-    expect(new Set(scene.hitTargets.map(({ x }) => x)).size).toBe(6);
-    expect(new Set(scene.hitTargets.map(({ y }) => y)).size).toBe(2);
-    expect(scene.nodes.some((node) => node.kind === "text" && node.text === "5 rated works")).toBe(true);
+    expect(recapPageCount(model)).toBe(1);
+    expect(model.slots.every(({ page }) => page === 0)).toBe(true);
+    const landscape = layoutRecapScene(model);
+    expect(landscape.hitTargets).toHaveLength(32);
+    expect(landscape.hitTargets[0].slotId).toBe(model.slots[5].id);
+    expect(landscape.hitTargets.at(-1)?.slotId).toBe(model.slots.at(-1)?.id);
+    expect(landscape.nodes.some((node) => node.kind === "text" && node.text === "2026")).toBe(true);
+    expect(landscape.nodes.some((node) => node.kind === "text" && node.text === "1994")).toBe(false);
+
+    const portrait = updateRecapComposition(model, { orientation: "portrait" });
+    const portraitScene = layoutRecapScene(portrait);
+    expect(portraitScene.hitTargets).toHaveLength(24);
+    expect(portraitScene.hitTargets[0].slotId).toBe(model.slots[13].id);
+    expect(portraitScene.hitTargets.at(-1)?.slotId).toBe(model.slots.at(-1)?.id);
+    const landscapeAgain = updateRecapComposition(portrait, { orientation: "landscape" });
+    expect(layoutRecapScene(landscapeAgain).hitTargets.map(({ slotId }) => slotId))
+      .toEqual(landscape.hitTargets.map(({ slotId }) => slotId));
+  });
+
+  it("chooses complete equal rows for 13, 17, 22, and 24 periods", () => {
+    const expected: Array<[number, number, number, number]> = [
+      [13, 12, 2, 6],
+      [17, 16, 2, 8],
+      [22, 21, 3, 7],
+      [24, 24, 3, 8],
+    ];
+    for (const [available, visible, expectedRows, expectedColumns] of expected) {
+      const model = periodComposition("releaseYear", available, "landscape");
+      expect(recapPageCount(model)).toBe(1);
+      const scene = layoutRecapScene(model);
+      expect(scene.hitTargets).toHaveLength(visible);
+      expect(new Set(scene.hitTargets.map(({ y }) => y)).size).toBe(expectedRows);
+      expect(new Set(scene.hitTargets.map(({ x }) => x)).size).toBe(expectedColumns);
+      expect(scene.hitTargets[0].slotId).toBe(model.slots[available - visible].id);
+      expect(scene.hitTargets.at(-1)?.slotId).toBe(model.slots.at(-1)?.id);
+      expect(scene.nodes.some((node) => node.kind === "text" && node.text === model.slots.at(-1)?.label)).toBe(true);
+    }
+
+    const portrait = layoutRecapScene(periodComposition("releaseYear", 22, "portrait"));
+    expect(portrait.hitTargets).toHaveLength(20);
+    expect(new Set(portrait.hitTargets.map(({ y }) => y)).size).toBe(4);
+    expect(new Set(portrait.hitTargets.map(({ x }) => x)).size).toBe(5);
   });
 
   it("keeps the current decade in the consecutive Best of Each Decade grid", () => {
     const model = denseDecadeComposition(1980, 2020);
-    expect(model.slots.map(({ label }) => label)).toEqual(["1990s", "2000s", "2010s", "2020s"]);
+    expect(model.slots.map(({ label }) => label)).toEqual(["1980s", "1990s", "2000s", "2010s", "2020s"]);
     expect(model.slots.every(({ populationCount }) => populationCount === 5)).toBe(true);
     const scene = layoutRecapScene(model);
     expect(scene.hitTargets).toHaveLength(4);
+    expect(scene.hitTargets[0].slotId).toBe(model.slots[1].id);
+    expect(scene.hitTargets.at(-1)?.slotId).toBe(model.slots.at(-1)?.id);
     expect(scene.nodes.some((node) => node.kind === "text" && node.text === "5 rated works")).toBe(true);
   });
 

@@ -147,6 +147,16 @@ export async function loadRecapCover(
   return loadEntryCover(entryId, assetId);
 }
 
+/** Smaller local thumbnail for Recap canvases; exports still load the full derivative. */
+export function loadRecapPreviewCover(
+  entryId: string,
+  assetId?: string | null,
+  remoteCover?: RemoteCoverReference | null,
+): Promise<string | null> {
+  if (isTauri() && assetId) return loadEntryCover(entryId, assetId);
+  return loadRecapCover(entryId, assetId, remoteCover);
+}
+
 /** Returns false when the user cancels the native destination picker. */
 export async function saveRecapImage(blob: Blob, filename: string): Promise<boolean> {
   if (!isTauri()) {

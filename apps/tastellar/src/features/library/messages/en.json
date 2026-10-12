@@ -548,5 +548,15 @@
   "library.bulk.ratingHint": "Moving works to planned or dropped clears their overall rating. Criterion ratings are kept.",
   "library.bulk.apply": "Apply changes",
   "library.bulk.removeCovers": "Remove covers",
+  "library.bulk.coverProvider": "Catalog source",
+  "library.bulk.coverHint": "Searches {provider} for each selected work. A successful download replaces its current cover; missing or failed covers leave it unchanged. Lookups run one at a time, about one per second.",
+  "library.bulk.noCoverProvider": "No enabled catalog supports the selected works. Set up a provider in API settings, or change the selection.",
+  "library.bulk.fetchCovers": "Fetch covers",
+  "library.bulk.stopCoverFetch": "Stop fetching",
+  "library.bulk.coverProgressLabel": "Cover fetch progress",
+  "library.bulk.coverProgress": "Fetching covers: {completed} of {total} works checked.",
+  "library.bulk.coverCurrent": "Fetching a cover for {title} ({completed} of {total} checked).",
+  "library.bulk.coverResult": "Updated {updated, plural, one {# cover} other {# covers}}. No match or saveable cover: {missing}. Failed searches, downloads, or saves: {failed}. Unsupported media types: {unsupported}.",
+  "library.bulk.coverStopped": "Stopped after {completed} of {total} works.",
   "library.bulk.done": "Finish selection"
 }

@@ -1,4 +1,6 @@
 import {
+  getRecapPeriodPosterGrid,
+  getVisibleRecapPeriodSlots,
   getRecapEntryCaption,
   type RecapComposition,
   type RecapEntrySnapshot,
@@ -168,15 +170,21 @@ const palettes: Record<RecapStyle, Palette> = {
 
 const sansFamily = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 const serifFamily = "Georgia, 'Times New Roman', serif";
-const decodedCoverCache = new Map<string, HTMLImageElement>();
-const coverDecodeJobs = new Map<string, Promise<HTMLImageElement>>();
-const MAX_DECODED_COVERS = 48;
+const decodedCoverCache = new Map<string, { source: string; image: HTMLImageElement }>();
+const coverDecodeJobs = new Map<string, { source: string; promise: Promise<HTMLImageElement> }>();
+const MAX_DECODED_COVERS = 4;
 
 function pageSlots(composition: RecapComposition, pageIndex: number): RecapSlot[] {
+  if (composition.templateId === "releaseYear" || composition.templateId === "decade") {
+    return pageIndex === 0
+      ? getVisibleRecapPeriodSlots(composition.slots, composition.orientation)
+      : [];
+  }
   return composition.slots.filter((slot) => slot.page === pageIndex);
 }
 
 export function recapPageCount(composition: RecapComposition): number {
+  if (composition.templateId === "releaseYear" || composition.templateId === "decade") return 1;
   return Math.max(1, ...composition.slots.map((slot) => slot.page + 1));
 }
 
@@ -455,21 +463,9 @@ function tileCollection(slots: RecapSlot[], orientation: RecapComposition["orien
   let cols = 1;
   let rows: number;
   if (periodTemplate && count > 0) {
-    // Keep each 2:3 poster intact and use only complete, bounded grids.
-    const shapes: Record<number, { landscape: [number, number]; portrait: [number, number] }> = {
-      2: { landscape: [2, 1], portrait: [1, 2] },
-      3: { landscape: [3, 1], portrait: [1, 3] },
-      4: { landscape: [4, 1], portrait: [2, 2] },
-      6: { landscape: [3, 2], portrait: [2, 3] },
-      8: { landscape: [4, 2], portrait: [2, 4] },
-      9: { landscape: [3, 3], portrait: [3, 3] },
-      12: { landscape: [6, 2], portrait: [3, 4] },
-    };
-    const shape = shapes[count] ?? {
-      landscape: [Math.min(6, count), Math.ceil(count / 6)] as [number, number],
-      portrait: [Math.min(3, count), Math.ceil(count / 3)] as [number, number],
-    };
-    [cols, rows] = landscape ? shape.landscape : shape.portrait;
+    const grid = getRecapPeriodPosterGrid(count, orientation);
+    cols = grid.columns;
+    rows = grid.rows;
   } else if (landscape) {
     if (templateId === "releaseYear" || templateId === "format") cols = Math.max(1, Math.min(16, count));
     else if (templateId === "decade") cols = Math.max(1, count <= 6 ? count : Math.ceil(count / 2));
@@ -585,35 +581,74 @@ export const buildRecapScene = layoutRecapScene;
 
 function loadImage(src: string, assetId: string): Promise<HTMLImageElement> {
   const cached = decodedCoverCache.get(assetId);
-  if (cached) {
+  if (cached?.source === src) {
     decodedCoverCache.delete(assetId);
     decodedCoverCache.set(assetId, cached);
-    return Promise.resolve(cached);
+    return Promise.resolve(cached.image);
   }
+  if (cached) decodedCoverCache.delete(assetId);
   const pending = coverDecodeJobs.get(assetId);
-  if (pending) return pending;
+  if (pending?.source === src) return pending.promise;
+  if (pending) coverDecodeJobs.delete(assetId);
+  let resolveJob!: (image: HTMLImageElement) => void;
+  let rejectJob!: (error: Error) => void;
   const job = new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.decoding = "async";
-    let settled = false;
-    const ready = () => {
-      if (settled) return;
-      settled = true;
-      decodedCoverCache.set(assetId, image);
+    resolveJob = resolve;
+    rejectJob = reject;
+  });
+  const request = { source: src, promise: job };
+  coverDecodeJobs.set(assetId, request);
+  const image = new Image();
+  image.decoding = "async";
+  let settled = false;
+  let loadFired = false;
+  let decodeFinished = false;
+  const fail = () => {
+    if (settled) return;
+    settled = true;
+    rejectJob(new Error("Image could not be loaded"));
+  };
+  const publish = () => {
+    if (settled) return;
+    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+      if (loadFired || image.complete) fail();
+      return;
+    }
+    settled = true;
+    if (coverDecodeJobs.get(assetId) === request) {
+      decodedCoverCache.set(assetId, { source: src, image });
       while (decodedCoverCache.size > MAX_DECODED_COVERS) {
         const oldest = decodedCoverCache.keys().next().value;
         if (oldest === undefined) break;
         decodedCoverCache.delete(oldest);
       }
-      resolve(image);
-    };
-    image.onload = ready;
-    image.onerror = () => reject(new Error("Image could not be loaded"));
-    image.src = src;
-    if (typeof image.decode === "function") image.decode().then(ready).catch(() => undefined);
-  });
-  coverDecodeJobs.set(assetId, job);
-  void job.finally(() => coverDecodeJobs.delete(assetId)).catch(() => undefined);
+    }
+    resolveJob(image);
+  };
+  image.onload = () => {
+    loadFired = true;
+    if (typeof image.decode !== "function" || decodeFinished) publish();
+  };
+  image.onerror = fail;
+  image.src = src;
+  if (typeof image.decode === "function") {
+    void image.decode().then(
+      () => {
+        decodeFinished = true;
+        publish();
+      },
+      () => {
+        decodeFinished = true;
+        // Some WebKit builds reject decode() even though the loaded image is
+        // drawable. Let a successful load event provide the fallback.
+        if (loadFired || (image.complete && image.naturalWidth > 0)) publish();
+        else if (image.complete) fail();
+      },
+    );
+  }
+  void job.finally(() => {
+    if (coverDecodeJobs.get(assetId) === request) coverDecodeJobs.delete(assetId);
+  }).catch(() => undefined);
   return job;
 }
 
@@ -622,6 +657,8 @@ export async function resolveRecapSceneCovers(
   scene: RecapScene,
   composition: RecapComposition,
   loadCover: RecapCoverLoader,
+  onProgress?: (scene: RecapScene) => void,
+  options: { concurrency?: number; shouldContinue?: () => boolean; imageCacheKeySuffix?: string } = {},
 ): Promise<RecapScene> {
   const resolvedScene: RecapScene = {
     ...scene,
@@ -638,33 +675,46 @@ export async function resolveRecapSceneCovers(
     });
   }
   const loaded = new Map<string, HTMLImageElement>();
-  await Promise.all([...assetIds.entries()].map(async ([sourceKey, { entryId, assetId, remoteCover }]) => {
-    try {
-      const src = await loadCover(entryId, assetId, remoteCover);
-      if (src) loaded.set(sourceKey, await loadImage(src, sourceKey));
-      else loaded.delete(sourceKey);
-    } catch {
-      loaded.delete(sourceKey);
-    }
-  }));
-  resolvedScene.nodes = resolvedScene.nodes.flatMap((node): RecapNode[] => {
-    if (node.kind !== "image") return [node];
-    const image = loaded.get(node.assetId);
-    if (image) return [{ ...node, image }];
-    const slot = pageSlots(composition, resolvedScene.pageIndex).find((item) => item.id === node.slotId);
-    const hit = resolvedScene.hitTargets.find((target) => target.slotId === node.slotId);
-    if (!slot?.entry || !hit) return [];
-    const palette = palettes[composition.style] ?? palettes.dark;
-    const placeholder: RecapPlaceholderNode = {
-      kind: "placeholder", x: hit.x, y: hit.y, width: hit.width, height: hit.height,
-      entryId: slot.entry.id, radius: node.radius,
-      gradientStart: palette.placeholderStart, gradientEnd: palette.placeholderEnd,
-      iconKey: slot.entry.iconKey ?? null, initial: normalizedInitial(slot.entry),
-      iconColor: palette.placeholderIcon, initialColor: palette.placeholderInitial,
-    };
-    return [placeholder];
+  const slotsById = new Map(pageSlots(composition, resolvedScene.pageIndex).map((slot) => [slot.id, slot]));
+  const hitsBySlot = new Map(resolvedScene.hitTargets.map((hit) => [hit.slotId, hit]));
+  const palette = palettes[composition.style] ?? palettes.dark;
+  const makeSnapshot = (): RecapScene => ({
+    ...resolvedScene,
+    nodes: resolvedScene.nodes.flatMap((node): RecapNode[] => {
+      if (node.kind !== "image") return [node];
+      const image = loaded.get(node.assetId);
+      if (image) return [{ ...node, image }];
+      const slot = slotsById.get(node.slotId);
+      const hit = hitsBySlot.get(node.slotId);
+      if (!slot?.entry || !hit) return [];
+      const placeholder: RecapPlaceholderNode = {
+        kind: "placeholder", x: hit.x, y: hit.y, width: hit.width, height: hit.height,
+        entryId: slot.entry.id, radius: node.radius,
+        gradientStart: palette.placeholderStart, gradientEnd: palette.placeholderEnd,
+        iconKey: slot.entry.iconKey ?? null, initial: normalizedInitial(slot.entry),
+        iconColor: palette.placeholderIcon, initialColor: palette.placeholderInitial,
+      };
+      return [placeholder];
+    }),
   });
-  return resolvedScene;
+
+  if (onProgress) onProgress(makeSnapshot());
+  const queue = [...assetIds.entries()];
+  const concurrency = Math.max(1, Math.min(4, options.concurrency ?? 4, queue.length || 1));
+  const worker = async () => {
+    while (queue.length && (options.shouldContinue?.() ?? true)) {
+      const [sourceKey, { entryId, assetId, remoteCover }] = queue.shift()!;
+      try {
+        const src = await loadCover(entryId, assetId, remoteCover);
+        if (src) loaded.set(sourceKey, await loadImage(src, options.imageCacheKeySuffix ? `${sourceKey}:${options.imageCacheKeySuffix}` : sourceKey));
+      } catch {
+        loaded.delete(sourceKey);
+      }
+      if (onProgress) onProgress(makeSnapshot());
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+  return makeSnapshot();
 }
 
 /** Resolve every cover before returning, for PNG/export callers. */
@@ -673,7 +723,9 @@ export async function loadRecapScene(
   loadCover: RecapCoverLoader,
   options: RecapSceneOptions = {},
 ): Promise<RecapScene> {
-  return resolveRecapSceneCovers(layoutRecapScene(composition, options), composition, loadCover);
+  return resolveRecapSceneCovers(layoutRecapScene(composition, options), composition, loadCover, undefined, {
+    imageCacheKeySuffix: "export",
+  });
 }
 
 function roundedPath(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {

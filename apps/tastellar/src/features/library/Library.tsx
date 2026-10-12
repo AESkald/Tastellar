@@ -30,12 +30,15 @@ import {
   readLibraryCover,
 } from "./LibraryEntryEditor";
 import { SelectControl } from "../../shared/ui/SelectControl";
-import { batchUpdateEntries, peekEntryCover } from "../../shared/bridge/libraryBridge";
+import { batchUpdateEntries, peekEntryCover, saveEntryCover } from "../../shared/bridge/libraryBridge";
 import {
   CATALOG_CAPABILITIES_CHANGED_EVENT,
   catalogCapabilities,
+  downloadCatalogCoverSource,
+  searchCatalog,
 } from "../../shared/bridge/catalogBridge";
 import type { CatalogCapability } from "../../shared/bridge/catalogTypes";
+import { enabledCatalogProviders, preferredCatalogProvider, rememberCatalogProvider } from "../../shared/bridge/catalogPreferences";
 import { errorMessage } from "../../shared/bridge/client";
 import "./library.css";
 import type {
@@ -53,6 +56,11 @@ import {
   type LibraryRankIndex,
   type RankedTierOrder,
 } from "./domain/rankDisplay";
+import {
+  fetchBulkLibraryCovers,
+  type BulkCoverProgress,
+  type BulkCoverResult,
+} from "./domain/bulkCoverAction";
 
 export type { LibraryViewSnapshot } from "../../shared/bridge/types";
 
@@ -257,6 +265,12 @@ export function Library({
   const [bulkIds, setBulkIds] = useState<string[]>([]);
   const [bulkType, setBulkType] = useState("");
   const [bulkDisposition, setBulkDisposition] = useState("");
+  const [bulkCoverProvider, setBulkCoverProvider] = useState("");
+  const [bulkCoverRunning, setBulkCoverRunning] = useState(false);
+  const [bulkCoverProgress, setBulkCoverProgress] = useState<BulkCoverProgress | null>(null);
+  const [bulkCoverResult, setBulkCoverResult] = useState<BulkCoverResult | null>(null);
+  const cancelBulkCoverFetch = useRef(false);
+  const bulkCoverMounted = useRef(true);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const [searchResultSelection, setSearchResultSelection] = useState<
@@ -269,6 +283,20 @@ export function Library({
   });
   const activeEntry =
     state.entries.find((entry) => entry.id === selectedEntryId) ?? null;
+  const selectedBulkEntries = useMemo(
+    () => bulkIds.flatMap((id) => {
+      const entry = state.entries.find((item) => item.id === id);
+      return entry ? [entry] : [];
+    }),
+    [bulkIds, state.entries],
+  );
+  const bulkCoverProviders = useMemo(() => {
+    const enabled = enabledCatalogProviders(catalogProviders);
+    if (!selectedBulkEntries.length) return enabled;
+    return enabled.filter((provider) => selectedBulkEntries.some(
+      (entry) => !entry.mediaTypeId || provider.mediaTypeIds.includes(entry.mediaTypeId),
+    ));
+  }, [catalogProviders, selectedBulkEntries]);
   useEffect(() => {
     let cancelled = false;
     const refreshCapabilities = () => {
@@ -290,6 +318,20 @@ export function Library({
     return () => {
       cancelled = true;
       window.removeEventListener(CATALOG_CAPABILITIES_CHANGED_EVENT, handleCapabilitiesChanged);
+    };
+  }, []);
+  useEffect(() => {
+    const next = preferredCatalogProvider(bulkCoverProviders, null, bulkCoverProvider);
+    if (next !== bulkCoverProvider) {
+      setBulkCoverProvider(next);
+      if (next) rememberCatalogProvider(next);
+    }
+  }, [bulkCoverProviders, bulkCoverProvider]);
+  useEffect(() => {
+    bulkCoverMounted.current = true;
+    return () => {
+      bulkCoverMounted.current = false;
+      cancelBulkCoverFetch.current = true;
     };
   }, []);
   const rankIndex = useMemo(
@@ -537,7 +579,10 @@ export function Library({
 
   const selectEntry = (entry: LibraryEntry, fromSearch = false) => {
     if (bulkMode) {
+      if (busy) return;
       setBulkIds((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id]);
+      setBulkCoverProgress(null);
+      setBulkCoverResult(null);
       onDetailsOpenChange(true);
       return;
     }
@@ -561,6 +606,50 @@ export function Library({
       if (action === "trash") setBulkIds([]);
     } catch (cause) { setActionError(errorMessage(cause)); }
     finally { setBusy(false); }
+  };
+  const fetchSelectedCovers = async () => {
+    const capability = bulkCoverProviders.find((item) => item.provider === bulkCoverProvider);
+    if (!selectedBulkEntries.length || !capability) return;
+    cancelBulkCoverFetch.current = false;
+    setBusy(true);
+    setBulkCoverRunning(true);
+    setBulkCoverProgress(null);
+    setBulkCoverResult(null);
+    setActionError("");
+    try {
+      const result = await fetchBulkLibraryCovers(selectedBulkEntries, capability, {
+        search: searchCatalog,
+        loadCover: (_entryId, cover) => downloadCatalogCoverSource(cover),
+        saveCover: async (requestedEntry, mimeType, base64) => {
+          await onLibraryMutation((current) => {
+            const currentEntry = current.entries.find((entry) => entry.id === requestedEntry.id);
+            if (!currentEntry || currentEntry.title !== requestedEntry.title ||
+              currentEntry.mediaTypeId !== requestedEntry.mediaTypeId ||
+              (currentEntry.releaseDate?.year ?? null) !== (requestedEntry.releaseDate?.year ?? null)) {
+              throw new Error(t("library.bulk.coverTargetChanged"));
+            }
+            return saveEntryCover(
+              current.revision,
+              requestedEntry.id,
+              mimeType,
+              base64,
+            );
+          });
+        },
+        onProgress: (progress) => {
+          if (bulkCoverMounted.current) setBulkCoverProgress(progress);
+        },
+        isCancelled: () => cancelBulkCoverFetch.current,
+      });
+      if (bulkCoverMounted.current) setBulkCoverResult(result);
+    } catch (cause) {
+      if (bulkCoverMounted.current) setActionError(errorMessage(cause));
+    } finally {
+      if (bulkCoverMounted.current) {
+        setBulkCoverRunning(false);
+        setBusy(false);
+      }
+    }
   };
   const createEntry = () => {
     setActionError("");
@@ -833,8 +922,8 @@ export function Library({
             </p>
           </div>
           <div className="library-heading-actions">
-            <button className={`icon-button ${bulkMode ? "active" : ""}`} title={t("library.bulk.select")} aria-label={t("library.bulk.select")} aria-pressed={bulkMode} onClick={() => {
-              setBulkMode((value) => !value); setBulkIds([]); setActionError(""); onDetailsOpenChange(true);
+            <button className={`icon-button ${bulkMode ? "active" : ""}`} title={t("library.bulk.select")} aria-label={t("library.bulk.select")} aria-pressed={bulkMode} disabled={busy} onClick={() => {
+              setBulkMode((value) => !value); setBulkIds([]); setActionError(""); setBulkCoverProgress(null); setBulkCoverResult(null); onDetailsOpenChange(true);
             }}><CheckSquare size={17} /></button>
             <button
               className={`icon-button ${hasActiveFilters ? "active" : ""}`}
@@ -1249,15 +1338,31 @@ export function Library({
         >
           {bulkMode ? <div className="library-bulk-panel">
             <p>{t("library.bulk.hint")}</p>
-            <div className="bulk-selection-actions"><button className="text-button" onClick={() => setBulkIds((current) => [...new Set([...current, ...groupEntries.map((entry) => entry.id)])])}>{t("library.bulk.selectVisible")}</button><button className="text-button" onClick={() => setBulkIds([])}>{t("library.bulk.clear")}</button></div>
+            <div className="bulk-selection-actions"><button className="text-button" disabled={busy} onClick={() => { setBulkIds((current) => [...new Set([...current, ...groupEntries.map((entry) => entry.id)])]); setBulkCoverProgress(null); setBulkCoverResult(null); }}>{t("library.bulk.selectVisible")}</button><button className="text-button" disabled={busy} onClick={() => { setBulkIds([]); setBulkCoverProgress(null); setBulkCoverResult(null); }}>{t("library.bulk.clear")}</button></div>
             <label className="field"><span>{t("library.catalog.mediaType")}</span><SelectControl value={bulkType} onValueChange={setBulkType}><option value="">{t("library.bulk.keep")}</option>{state.mediaTypes.filter((item) => !item.archivedAt).map((item) => <option key={item.id} value={item.id}>{mediaTypeName(item.id, item.name)}</option>)}</SelectControl></label>
             <label className="field"><span>{t("library.import.status")}</span><SelectControl value={bulkDisposition} onValueChange={setBulkDisposition}><option value="">{t("library.bulk.keep")}</option><option value="experienced">{t("library.ui.alreadyExperienced")}</option><option value="planned">{t("library.ui.group.planned")}</option><option value="dropped">{t("library.ui.group.dropped")}</option></SelectControl></label>
             {bulkDisposition && bulkDisposition !== "experienced" && <p className="field-hint">{t("library.bulk.ratingHint")}</p>}
+            <label className="field"><span>{t("library.bulk.coverProvider")}</span><SelectControl value={bulkCoverProvider} disabled={busy || !bulkCoverProviders.length} onValueChange={(value) => { setBulkCoverProvider(value); rememberCatalogProvider(value); setBulkCoverProgress(null); setBulkCoverResult(null); }}>{bulkCoverProviders.map((provider) => <option key={provider.provider} value={provider.provider}>{provider.label}</option>)}</SelectControl></label>
+            <p className="field-hint">{t("library.bulk.coverHint", { provider: bulkCoverProviders.find((item) => item.provider === bulkCoverProvider)?.label ?? t("library.bulk.coverProvider") })}</p>
+            {!bulkCoverProviders.length && <p className="field-hint" role="status">{t("library.bulk.noCoverProvider")}</p>}
             {actionError && <p role="alert" className="error-message">{actionError}</p>}
+            {bulkCoverProgress && <div className="library-bulk-cover-progress" role="status" aria-live="polite">
+              <progress value={bulkCoverProgress.completed} max={bulkCoverProgress.total} aria-label={t("library.bulk.coverProgressLabel")} />
+              <span>{bulkCoverProgress.currentTitle
+                ? t("library.bulk.coverCurrent", { title: bulkCoverProgress.currentTitle, completed: bulkCoverProgress.completed, total: bulkCoverProgress.total })
+                : t("library.bulk.coverProgress", { completed: bulkCoverProgress.completed, total: bulkCoverProgress.total })}</span>
+            </div>}
+            {bulkCoverResult && <p role="status" className="library-bulk-cover-result">{t("library.bulk.coverResult", {
+              updated: bulkCoverResult.updated,
+              missing: bulkCoverResult.missing,
+              failed: bulkCoverResult.failed,
+              unsupported: bulkCoverResult.unsupported,
+            })}{bulkCoverResult.cancelled ? ` ${t("library.bulk.coverStopped", { completed: bulkCoverResult.completed, total: bulkCoverResult.total })}` : ""}</p>}
             <button className="button primary" disabled={busy || !bulkIds.length || (!bulkType && !bulkDisposition)} onClick={() => void applyBulk("edit")}>{t("library.bulk.apply")}</button>
             <button className="button secondary" disabled={busy || !bulkIds.length} onClick={() => void applyBulk("covers")}>{t("library.bulk.removeCovers")}</button>
+            {bulkCoverRunning ? <button className="button secondary" onClick={() => { cancelBulkCoverFetch.current = true; }}>{t("library.bulk.stopCoverFetch")}</button> : <button className="button secondary" disabled={busy || !bulkIds.length || !bulkCoverProvider} onClick={() => void fetchSelectedCovers()}><ImagePlus size={15} />{t("library.bulk.fetchCovers")}</button>}
             <button className="text-button danger-link" disabled={busy || !bulkIds.length} onClick={() => void applyBulk("trash")}>{t("library.ui.moveToTrash")}</button>
-            <button className="text-button" onClick={() => { setBulkMode(false); setBulkIds([]); }}>{t("library.bulk.done")}</button>
+            <button className="text-button" disabled={busy} onClick={() => { setBulkMode(false); setBulkIds([]); }}>{t("library.bulk.done")}</button>
           </div> : panelMode === "filters" ? (
             <LibraryFilterPanel
               state={state}
@@ -1624,7 +1729,7 @@ function CoverGridTile({
       className={`work-cover-tile ${entry.coverAssetId || entry.remoteCover ? "has-cover" : "no-cover"}`}
     >
       {image ? (
-        <img src={image} alt="" decoding="async" referrerPolicy="no-referrer" onError={() => setImageState({ key: imageKey, source: null })} />
+        <img src={image} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setImageState({ key: imageKey, source: null })} />
       ) : entry.coverAssetId || entry.remoteCover ? (
         <span className="cover-present">
           <ImagePlus size={19} /> {t("library.ui.coverSaved")}

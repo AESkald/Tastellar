@@ -56,7 +56,7 @@ impl Storage {
             [entry_id], |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional()?;
         asset
-            .map(|(hash, relative)| self.prepare_cover(&hash, &relative, 900, 1200))
+            .map(|(hash, relative)| self.prepare_cover(&hash, &relative, 300, 400))
             .transpose()
     }
 
@@ -209,7 +209,7 @@ mod tests {
         let encoded = data_url.strip_prefix("data:image/png;base64,").unwrap();
         let bytes = BASE64.decode(encoded).unwrap();
         let image = image::load_from_memory_with_format(&bytes, ImageFormat::Png).unwrap();
-        assert_eq!(image.to_rgba8().dimensions(), (900, 1200));
+        assert_eq!(image.to_rgba8().dimensions(), (300, 400));
         fs::remove_dir_all(root).unwrap();
     }
 

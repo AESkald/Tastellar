@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadRecapCoverWithCache } from "./coverCache";
 
 describe("Recap cover request cache", () => {
-  it("drops failed reads so a later request can recover with the same cover reference", async () => {
+  it("drops settled reads so source bytes remain governed by the shared bounded cache", async () => {
     const cache = new Map<string, Promise<string | null>>();
     const load = vi.fn()
       .mockResolvedValueOnce(null)
@@ -11,7 +11,7 @@ describe("Recap cover request cache", () => {
     await expect(loadRecapCoverWithCache(cache, "same-cover", load)).resolves.toBeNull();
     expect(cache.has("same-cover")).toBe(false);
     await expect(loadRecapCoverWithCache(cache, "same-cover", load)).resolves.toBe("data:image/png;base64,recovered");
-    expect(cache.has("same-cover")).toBe(true);
+    expect(cache.has("same-cover")).toBe(false);
     expect(load).toHaveBeenCalledTimes(2);
   });
 
@@ -29,5 +29,6 @@ describe("Recap cover request cache", () => {
     await expect(Promise.all([first, second])).resolves.toEqual([
       "data:image/png;base64,shared", "data:image/png;base64,shared",
     ]);
+    expect(cache.has("shared-cover")).toBe(false);
   });
 });

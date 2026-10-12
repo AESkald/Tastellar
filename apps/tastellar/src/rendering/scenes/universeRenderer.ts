@@ -295,6 +295,8 @@ interface GLResources {
   line: GLProgramInfo;
   billboardBuffer: WebGLBuffer;
   lineBuffer: WebGLBuffer;
+  billboardCapacityFloats: number;
+  lineCapacityFloats: number;
 }
 interface MutableNode extends LayoutObject {
   key: string;
@@ -610,7 +612,15 @@ function makeGLResources(gl: WebGLRenderingContext): GLResources {
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LEQUAL);
-  return { gl, billboard, line, billboardBuffer, lineBuffer };
+  return {
+    gl,
+    billboard,
+    line,
+    billboardBuffer,
+    lineBuffer,
+    billboardCapacityFloats: 0,
+    lineCapacityFloats: 0,
+  };
 }
 
 function spriteKindCode(kind: SpriteKind): number { return KIND_CODE[kind]; }
@@ -1539,9 +1549,20 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
     }
     return new Float32Array(output);
   }
-  function uploadAttribute(gl: WebGLRenderingContext, buffer: WebGLBuffer, info: GLProgramInfo, data: Float32Array, billboard: boolean) {
+  function uploadAttribute(
+    gl: WebGLRenderingContext,
+    buffer: WebGLBuffer,
+    info: GLProgramInfo,
+    data: Float32Array,
+    billboard: boolean,
+    capacityFloats: number,
+  ): number {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    if (data.length > capacityFloats) {
+      capacityFloats = Math.max(data.length, Math.max(1024, capacityFloats * 2));
+      gl.bufferData(gl.ARRAY_BUFFER, capacityFloats * Float32Array.BYTES_PER_ELEMENT, gl.DYNAMIC_DRAW);
+    }
+    if (data.length) gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
     const stride = billboard ? 12 * 4 : 7 * 4;
     gl.enableVertexAttribArray(info.position);
     gl.vertexAttribPointer(info.position, 3, gl.FLOAT, false, stride, 0);
@@ -1557,6 +1578,7 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
       gl.enableVertexAttribArray(info.corner!);
       gl.vertexAttribPointer(info.corner!, 2, gl.FLOAT, false, stride, 10 * 4);
     }
+    return capacityFloats;
   }
   function drawWebGL(_time: number) {
     if (!glResources) return;
@@ -1590,7 +1612,9 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
       gl.uniform1f(billboard.lightMode!, lightMode);
       gl.uniform3fv(billboard.horizonColor!, horizonRgb);
       gl.uniform1f(billboard.renderPass!, pass);
-      uploadAttribute(gl, billboardBuffer, billboard, data, true);
+      glResources!.billboardCapacityFloats = uploadAttribute(
+        gl, billboardBuffer, billboard, data, true, glResources!.billboardCapacityFloats,
+      );
       gl.drawArrays(gl.TRIANGLES, 0, data.length / 12);
     };
 
@@ -1621,7 +1645,9 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
     if (lineData.length) {
       gl.useProgram(line.program);
       gl.uniformMatrix4fv(line.viewProjection, false, viewProjection);
-      uploadAttribute(gl, lineBuffer, line, lineData, false);
+      glResources.lineCapacityFloats = uploadAttribute(
+        gl, lineBuffer, line, lineData, false, glResources.lineCapacityFloats,
+      );
       gl.drawArrays(gl.LINES, 0, lineData.length / 7);
     }
     renderBillboards(sceneData, viewProjection, 1);
@@ -1632,7 +1658,9 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
     if (lensingData.length) {
       gl.useProgram(line.program);
       gl.uniformMatrix4fv(line.viewProjection, false, viewProjection);
-      uploadAttribute(gl, lineBuffer, line, lensingData, false);
+      glResources.lineCapacityFloats = uploadAttribute(
+        gl, lineBuffer, line, lensingData, false, glResources.lineCapacityFloats,
+      );
       gl.drawArrays(gl.LINES, 0, lensingData.length / 7);
     }
     gl.depthMask(true);
@@ -1908,7 +1936,9 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
   }
   function shouldAnimate(): boolean {
     const canTransition = (status === "ready" || status === "fallback") && hasTransition();
-    const canAnimateScene = status === "ready" && motion;
+    // Deep Field has a stationary orthographic layout. Render it on demand and
+    // only keep the animation loop alive while a scale transition is in flight.
+    const canAnimateScene = status === "ready" && motion && projection.group !== "7";
     return !disposed && active && inViewport && doc.visibilityState !== "hidden" && (canAnimateScene || canTransition) && quality !== "off";
   }
   function render(time: number) {

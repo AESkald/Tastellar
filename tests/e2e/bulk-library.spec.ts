@@ -1,7 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function installNativeLibraryMock(page: Page, disposition = "planned", overallRating: number | null = null) {
-  await page.addInitScript(({ initialDisposition, initialRating }) => {
+async function installNativeLibraryMock(
+  page: Page,
+  disposition = "planned",
+  overallRating: number | null = null,
+  catalogOptions: { enabled?: boolean; failDownloadFor?: string } = {},
+) {
+  await page.addInitScript(({ initialDisposition, initialRating, enabled, failDownloadFor }) => {
     const g = window as any;
     const mediaTypes = [
       ["literature", "Literature", "book-open"],
@@ -42,6 +47,7 @@ async function installNativeLibraryMock(page: Page, disposition = "planned", ove
     };
     const calls: any[] = [];
     g.__testCalls = calls;
+    g.__testGetLibrary = () => structuredClone(library);
     g.isTauri = true;
     g.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: "main" } },
@@ -57,7 +63,42 @@ async function installNativeLibraryMock(page: Page, disposition = "planned", ove
           activeSession: null,
         };
         else if (command === "load_avatar") result = null;
-        else if (command === "catalog_capabilities") result = [];
+        else if (command === "catalog_capabilities") result = enabled ? [{
+          provider: "igdb", label: "IGDB", enabled: true, configured: true, reason: null,
+          mediaTypeIds: ["games"], termsUrl: "https://www.igdb.com/api", attributionText: "IGDB",
+        }] : [];
+        else if (command === "search_catalog") {
+          const coverFile = args.input.query === "Bulk target two"
+            ? "bulk-fixture-second.jpg"
+            : "bulk-fixture-first.jpg";
+          result = {
+            results: [{
+              provider: "igdb", id: `synthetic-${args.input.query}`, mediaType: "game",
+              title: `${args.input.query} catalog match`, originalTitle: null, creators: [], year: null,
+              suggestedMediaTypeId: "games", identities: [],
+              coverUrl: `https://images.igdb.com/igdb/image/upload/t_cover_big/${coverFile}`,
+              coverMode: "persistReference", coverProvider: "igdb",
+              remoteCover: {
+                provider: "igdb",
+                url: `https://images.igdb.com/igdb/image/upload/t_cover_big/${coverFile}`,
+                sourceUrl: null, attribution: "IGDB",
+              },
+              attribution: "IGDB", sourceUrl: null,
+            }], nextPage: null, warnings: [],
+          };
+        } else if (command === "load_recap_remote_cover") {
+          result = Boolean(failDownloadFor) && args.url.includes(failDownloadFor)
+            ? null
+            : `data:image/jpeg;base64,${btoa("synthetic-cover-bytes")}`;
+        } else if (command === "save_entry_cover") {
+          const entry = library.entries.find((item: any) => item.id === args.entryId);
+          if (!entry || args.expectedRevision !== library.revision) throw new Error("Stale library revision");
+          entry.coverAssetId = `replacement-${args.entryId}`;
+          entry.remoteCover = null;
+          entry.version += 1;
+          library.revision += 1;
+          result = structuredClone(library);
+        }
         else if (command === "save_workspace") result = structuredClone(home);
         else if (command === "batch_update_entries") {
           const input = args.input;
@@ -83,7 +124,12 @@ async function installNativeLibraryMock(page: Page, disposition = "planned", ove
         return result;
       },
     };
-  }, { initialDisposition: disposition, initialRating: overallRating });
+  }, {
+    initialDisposition: disposition,
+    initialRating: overallRating,
+    enabled: catalogOptions.enabled ?? false,
+    failDownloadFor: catalogOptions.failDownloadFor ?? "",
+  });
 }
 
 test("bulk selection applies one native batch update and removes covers as a batch", async ({ page }) => {
@@ -128,6 +174,40 @@ test("bulk selection applies one native batch update and removes covers as a bat
     removeCovers: true,
   });
   expect(batchCalls[1].result.entries.every((entry: any) => entry.coverAssetId === null && entry.remoteCover === null)).toBe(true);
+});
+
+test("bulk catalog cover fetch replaces successful covers and leaves failed downloads untouched", async ({ page }) => {
+  await installNativeLibraryMock(page, "planned", null, { enabled: true, failDownloadFor: "bulk-fixture-second.jpg" });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await page.getByRole("button", { name: "Select works", exact: true }).click();
+
+  const first = page.locator(".library-work-card").filter({ hasText: "Bulk target one" });
+  const second = page.locator(".library-work-card").filter({ hasText: "Bulk target two" });
+  await first.locator(".work-card-select").click();
+  await second.locator(".work-card-select").click();
+  await expect(page.getByText("Selected · 2", { exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Catalog source", exact: true })).toContainText("IGDB");
+  await page.getByRole("button", { name: "Fetch covers", exact: true }).click();
+
+  await expect(page.getByRole("status").filter({ hasText: "Updated 1 cover." })).toBeVisible({ timeout: 5000 });
+  const calls = await page.evaluate(() => (window as any).__testCalls);
+  const searches = calls.filter((call: any) => call.command === "search_catalog");
+  const downloads = calls.filter((call: any) => call.command === "load_recap_remote_cover");
+  const saves = calls.filter((call: any) => call.command === "save_entry_cover");
+  expect(searches).toHaveLength(2);
+  expect(searches[0].args.input).toMatchObject({
+    query: "Bulk target one",
+    mediaTypeId: "games",
+    providers: ["igdb"],
+    page: null,
+  });
+  expect(downloads).toHaveLength(2);
+  expect(saves).toHaveLength(1);
+  expect(saves[0].args).toMatchObject({ entryId: "entry-one", expectedRevision: 1, mimeType: "image/jpeg" });
+  const library = await page.evaluate(() => (window as any).__testGetLibrary());
+  expect(library.entries[0].coverAssetId).toBe("replacement-entry-one");
+  expect(library.entries[1].coverAssetId).toBe("cover-two");
 });
 
 test("opens the Unrated group when all existing works are experienced without ratings", async ({ page }) => {

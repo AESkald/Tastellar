@@ -134,47 +134,72 @@ function createPreviewState(revision: number): LibraryState {
 }
 
 const PREVIEW_LIBRARY_KEY = "tastellar.preview.library.v1";
-const MAX_COVER_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
+const MAX_LIBRARY_COVER_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_RECAP_COVER_CACHE_BYTES = 16 * 1024 * 1024;
 const COVER_PREWARM_MAX_ENTRIES = 32;
+const COVER_PREWARM_PROTECTED_ENTRIES = 16;
 const COVER_PREWARM_CONCURRENCY = 3;
 const loadedEntryCovers = new Map<string, { source: string; bytes: number }>();
 const entryCoverRequests = new Map<string, Promise<string | null>>();
 const entryCoverAssetByEntry = new Map<string, string>();
+const protectedEntryCoverKeys = new Set<string>();
 let loadedEntryCoverBytes = 0;
+let loadedLibraryCoverBytes = 0;
+let loadedRecapCoverBytes = 0;
 let entryCoverCacheGeneration = 0;
 
-function rememberEntryCover(key: string, source: string) {
-  const previous = loadedEntryCovers.get(key);
-  if (previous) loadedEntryCoverBytes -= previous.bytes;
-  const item = { source, bytes: source.length * 2 };
-  if (item.bytes > MAX_COVER_SOURCE_CACHE_BYTES) {
-    loadedEntryCovers.delete(key);
-    for (const [entryId, assetId] of entryCoverAssetByEntry) {
-      if (`library:${assetId}` === key) entryCoverAssetByEntry.delete(entryId);
-    }
-    return;
-  }
+function coverCacheClass(key: string): "library" | "recap" {
+  return key.startsWith("recap:") ? "recap" : "library";
+}
+
+function forgetEntryCover(key: string) {
+  const item = loadedEntryCovers.get(key);
+  if (!item) return;
+  loadedEntryCoverBytes -= item.bytes;
+  if (coverCacheClass(key) === "recap") loadedRecapCoverBytes -= item.bytes;
+  else loadedLibraryCoverBytes -= item.bytes;
   loadedEntryCovers.delete(key);
+  for (const [entryId, assetId] of entryCoverAssetByEntry) {
+    if (`library:${assetId}` === key) entryCoverAssetByEntry.delete(entryId);
+  }
+}
+
+function rememberEntryCover(key: string, source: string) {
+  forgetEntryCover(key);
+  const item = { source, bytes: source.length * 2 };
+  const cacheClass = coverCacheClass(key);
+  const classLimit = cacheClass === "recap"
+    ? MAX_RECAP_COVER_CACHE_BYTES
+    : MAX_LIBRARY_COVER_CACHE_BYTES;
+  if (item.bytes > classLimit) return;
   loadedEntryCovers.set(key, item);
   loadedEntryCoverBytes += item.bytes;
-  while (loadedEntryCoverBytes > MAX_COVER_SOURCE_CACHE_BYTES && loadedEntryCovers.size > 1) {
-    const oldestKey = loadedEntryCovers.keys().next().value;
+  if (cacheClass === "recap") loadedRecapCoverBytes += item.bytes;
+  else loadedLibraryCoverBytes += item.bytes;
+  while (
+    (cacheClass === "recap" ? loadedRecapCoverBytes : loadedLibraryCoverBytes) > classLimit &&
+    loadedEntryCovers.size > 1
+  ) {
+    const keysOfClass = [...loadedEntryCovers.keys()].filter((candidate) => coverCacheClass(candidate) === cacheClass);
+    const oldestKey = keysOfClass.find((candidate) => !protectedEntryCoverKeys.has(candidate))
+      ?? keysOfClass[0];
     if (oldestKey === undefined) break;
-    const oldest = loadedEntryCovers.get(oldestKey);
-    if (oldest) loadedEntryCoverBytes -= oldest.bytes;
-    loadedEntryCovers.delete(oldestKey);
-    for (const [entryId, assetId] of entryCoverAssetByEntry) {
-      if (`library:${assetId}` === oldestKey) entryCoverAssetByEntry.delete(entryId);
-    }
+    protectedEntryCoverKeys.delete(oldestKey);
+    forgetEntryCover(oldestKey);
   }
 }
 
 function deleteCachedEntryCover(entryId: string) {
+  const previousAssetId = entryCoverAssetByEntry.get(entryId);
+  if (previousAssetId) {
+    const previousKey = `library:${previousAssetId}`;
+    protectedEntryCoverKeys.delete(previousKey);
+    entryCoverRequests.delete(previousKey);
+    forgetEntryCover(previousKey);
+  }
   entryCoverAssetByEntry.delete(entryId);
   const key = `entry:${entryId}`;
-  const item = loadedEntryCovers.get(key);
-  if (item) loadedEntryCoverBytes -= item.bytes;
-  loadedEntryCovers.delete(key);
+  forgetEntryCover(key);
   entryCoverRequests.delete(key);
 }
 
@@ -220,7 +245,10 @@ export function clearEntryCoverCache() {
   loadedEntryCovers.clear();
   entryCoverRequests.clear();
   entryCoverAssetByEntry.clear();
+  protectedEntryCoverKeys.clear();
   loadedEntryCoverBytes = 0;
+  loadedLibraryCoverBytes = 0;
+  loadedRecapCoverBytes = 0;
 }
 
 export async function prewarmEntryCovers(
@@ -230,6 +258,10 @@ export async function prewarmEntryCovers(
   const candidates = entries
     .filter((entry) => entry.coverAssetId)
     .slice(0, Math.max(0, options.limit ?? COVER_PREWARM_MAX_ENTRIES));
+  protectedEntryCoverKeys.clear();
+  for (const entry of candidates.slice(0, COVER_PREWARM_PROTECTED_ENTRIES)) {
+    if (entry.coverAssetId) protectedEntryCoverKeys.add(`library:${entry.coverAssetId}`);
+  }
   const queue = [...candidates];
   const concurrency = Math.max(1, Math.min(6, options.concurrency ?? COVER_PREWARM_CONCURRENCY, queue.length || 1));
   const worker = async () => {
@@ -586,7 +618,7 @@ export function saveEntryCover(
     expectedRevision,
     () => {
       const now = new Date().toISOString();
-      previewCovers.set(entryId, `data:${mimeType};base64,${base64}`);
+      if (!native) previewCovers.set(entryId, `data:${mimeType};base64,${base64}`);
       preview.entries = preview.entries.map((entry) =>
         entry.id === entryId
           ? {
@@ -600,13 +632,15 @@ export function saveEntryCover(
     },
   ).then((saved) => {
     const source = `data:${mimeType};base64,${base64}`;
-    previewCovers.set(entryId, source);
+    if (!native) previewCovers.set(entryId, source);
     const assetId = saved.entries.find((entry) => entry.id === entryId)?.coverAssetId ?? undefined;
     deleteCachedEntryCover(entryId);
     if (assetId) {
-      rememberEntryCover(`library:${assetId}`, source);
       entryCoverAssetByEntry.set(entryId, assetId);
-    } else {
+      // Native uploads are originals. Let load_entry_cover populate the small
+      // library derivative instead of retaining the full upload as a tile source.
+      if (!native) rememberEntryCover(`library:${assetId}`, source);
+    } else if (!native) {
       rememberEntryCover(`entry:${entryId}`, source);
     }
     return saved;
@@ -614,17 +648,16 @@ export function saveEntryCover(
 }
 
 export function loadEntryCover(entryId: string, assetId?: string | null): Promise<string | null> {
+  // The entry snapshot is authoritative. Updating this before starting I/O
+  // prevents an older in-flight cover request from restoring a replaced asset.
+  if (assetId) entryCoverAssetByEntry.set(entryId, assetId);
   const resolvedAssetId = assetId || entryCoverAssetByEntry.get(entryId);
   const key = resolvedAssetId ? `library:${resolvedAssetId}` : `entry:${entryId}`;
   const cached = peekEntryCover(entryId, assetId);
   if (cached !== null) return Promise.resolve(cached);
   return loadCachedCoverSource(key, () => native
     ? invoke<string | null>("load_entry_cover", { entryId })
-    : Promise.resolve(previewCovers.get(entryId) ?? null))
-    .then((source) => {
-      if (source && assetId) entryCoverAssetByEntry.set(entryId, assetId);
-      return source;
-    });
+    : Promise.resolve(previewCovers.get(entryId) ?? null));
 }
 
 export function errorMessage(error: unknown): string {

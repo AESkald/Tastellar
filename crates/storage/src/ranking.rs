@@ -834,6 +834,7 @@ impl Storage {
     pub(crate) fn import_ranking_archive(
         tx: &Transaction<'_>,
         archive: Option<&RankingArchive>,
+        allow_legacy_session_recovery: bool,
     ) -> Result<(), StorageError> {
         tx.execute("DELETE FROM ranking_judgment", [])?;
         tx.execute("DELETE FROM ranking_session", [])?;
@@ -938,25 +939,41 @@ impl Storage {
                         "Ranking archive session snapshot repeats a media ID".into(),
                     ));
                 }
-                if archive.schema_version < 3
-                    && session.status == "active"
-                    && session.mode == "normal"
-                {
-                    let full_order = tier_ids(tx, session.score, true)?;
-                    let mut expected = full_order;
-                    let mut archived = snapshot.clone();
-                    expected.sort();
-                    archived.sort();
-                    if expected != archived {
-                        return Err(StorageError::Validation(
-                            "Legacy active normal session snapshot does not match the placed tier"
-                                .into(),
-                        ));
-                    }
-                    snapshot = filtered_tier_ids(tx, &snapshot, &filter)?;
-                }
                 let explicit_subset = archive.schema_version >= 3 && session.explicit_subset;
-                tx.execute("INSERT INTO ranking_session(id,score,status,mode,intent,filter_json,seed,snapshot_order_json,explicit_subset,snapshot_order_revision,candidate_id,low_bound,high_bound,current_pivot_id,answered_count,presented_duel_id,presented_left_id,presented_right_id,presented_step,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",params![session.id,session.score,session.status,session.mode,session.intent,session.filter_json,session.seed,serde_json::to_string(&snapshot)?,explicit_subset,session.snapshot_order_revision,session.candidate_id,session.low_bound,session.high_bound,session.current_pivot_id,session.answered_count,session.presented_duel_id,session.presented_left_id,session.presented_right_id,session.presented_step,session.created_at,session.updated_at])?;
+                let mut status = session.status.as_str();
+                if session.status == "active" && session.mode == "normal" {
+                    let full_order = tier_ids(tx, session.score, true)?;
+                    let participants_match = if archive.schema_version < 3 {
+                        same_ids(&full_order, &snapshot)
+                    } else {
+                        let expected = filtered_tier_ids(tx, &full_order, &filter)?;
+                        if explicit_subset {
+                            let eligible = expected.into_iter().collect::<HashSet<_>>();
+                            snapshot.iter().all(|id| eligible.contains(id))
+                        } else {
+                            same_ids(&expected, &snapshot)
+                        }
+                    };
+                    if !participants_match {
+                        if allow_legacy_session_recovery
+                            && can_end_legacy_normal_session(tx, session, &snapshot, &filter)?
+                        {
+                            // Older builds could keep a normal duel active after its
+                            // participants became unplaced. Retain its snapshot and
+                            // answers, but never reactivate it against a different tier.
+                            status = "ended";
+                        } else if archive.schema_version < 3 {
+                            return Err(StorageError::Validation(
+                                "Legacy active normal session snapshot does not match the placed tier"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    if archive.schema_version < 3 && status == "active" {
+                        snapshot = filtered_tier_ids(tx, &snapshot, &filter)?;
+                    }
+                }
+                tx.execute("INSERT INTO ranking_session(id,score,status,mode,intent,filter_json,seed,snapshot_order_json,explicit_subset,snapshot_order_revision,candidate_id,low_bound,high_bound,current_pivot_id,answered_count,presented_duel_id,presented_left_id,presented_right_id,presented_step,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",params![session.id,session.score,status,session.mode,session.intent,session.filter_json,session.seed,serde_json::to_string(&snapshot)?,explicit_subset,session.snapshot_order_revision,session.candidate_id,session.low_bound,session.high_bound,session.current_pivot_id,session.answered_count,session.presented_duel_id,session.presented_left_id,session.presented_right_id,session.presented_step,session.created_at,session.updated_at])?;
             }
             for judgment in &archive.judgments {
                 if !(1..=10).contains(&judgment.score)
@@ -2227,6 +2244,40 @@ fn filtered_tier_ids(
     }
     Ok(filtered)
 }
+
+fn same_ids(left: &[String], right: &[String]) -> bool {
+    left.len() == right.len()
+        && left.iter().collect::<HashSet<_>>() == right.iter().collect::<HashSet<_>>()
+}
+
+/// An old active normal session can be safely retained as ended when all of
+/// its frozen participants are still active rated entries in the same tier.
+/// Other malformed snapshots remain validation errors.
+fn can_end_legacy_normal_session(
+    tx: &Transaction<'_>,
+    session: &RankingSessionArchive,
+    snapshot: &[String],
+    filter: &[String],
+) -> Result<bool, StorageError> {
+    if session.candidate_id.is_some() || !(2..=200).contains(&snapshot.len()) {
+        return Ok(false);
+    }
+    for entry_id in snapshot {
+        let still_in_tier: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM ranking_entry re JOIN entry e ON e.id=re.entry_id WHERE re.entry_id=?1 AND re.score=?2 AND e.disposition='experienced' AND e.overall_rating=?2 AND e.trashed_at IS NULL)",
+            params![entry_id, session.score],
+            |row| row.get(0),
+        )?;
+        if !still_in_tier {
+            return Ok(false);
+        }
+        if !media_type_matches_filter(tx, entry_id, filter)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn tier_order_snapshot(
     tx: &Transaction<'_>,
     score: i32,

@@ -103,7 +103,7 @@ export interface RecapTemplateAvailability {
   requiredCount: number;
   reason: RecapIneligibilityReason | null;
   missingReleaseDateCount: number;
-  /** Selected consecutive period window and its filtered library population. */
+  /** Newest consecutive run of qualifying periods and their filtered populations. */
   periods: RecapPeriodAvailability[];
 }
 
@@ -157,10 +157,66 @@ export function getDefaultRecapOrientation(templateId: RecapStoredTemplateId): R
 }
 
 function pageCapacity(templateId: RecapStoredTemplateId, orientation: RecapOrientation): number {
-  if (templateId === "releaseYear" || templateId === "decade") return 12;
+  if (templateId === "releaseYear" || templateId === "decade") return Number.MAX_SAFE_INTEGER;
   if (templateId === "format") return 6;
   if (templateId === "selection") return orientation === "landscape" ? 10 : 6;
   return Number.MAX_SAFE_INTEGER;
+}
+
+export interface RecapPeriodPosterGrid {
+  rows: number;
+  columns: number;
+  /** Number of newest period cells that fit in this complete rectangular grid. */
+  count: number;
+}
+
+/**
+ * Select a full-row period poster grid. Except for a single period, every
+ * poster uses two to four complete rows and crops only the oldest excess.
+ * Landscape can use eight columns, while portrait uses six to bound its width.
+ */
+export function getRecapPeriodPosterGrid(
+  count: number,
+  orientation: RecapOrientation,
+): RecapPeriodPosterGrid {
+  if (count <= 0) return { rows: 1, columns: 1, count: 0 };
+  if (count === 1) return { rows: 1, columns: 1, count: 1 };
+
+  const maxColumns = orientation === "landscape" ? 8 : 6;
+  const candidates: RecapPeriodPosterGrid[] = [];
+  for (let rows = 2; rows <= 4; rows += 1) {
+    for (let columns = 1; columns <= maxColumns; columns += 1) {
+      const cells = rows * columns;
+      if (cells <= count) candidates.push({ rows, columns, count: cells });
+    }
+  }
+  candidates.sort((first, second) =>
+    second.count - first.count ||
+    (orientation === "landscape" ? first.rows - second.rows : second.rows - first.rows),
+  );
+  return candidates[0] ?? { rows: 2, columns: 1, count: 2 };
+}
+
+/** Return the newest complete poster window while retaining chronological order. */
+export function getRecapPeriodPosterWindow<T>(
+  periods: readonly T[],
+  orientation: RecapOrientation,
+): T[] {
+  const grid = getRecapPeriodPosterGrid(periods.length, orientation);
+  return [...periods.slice(Math.max(0, periods.length - grid.count))];
+}
+
+/** Select visible period slots using the same row policy as the renderer. */
+export function getVisibleRecapPeriodSlots(
+  slots: readonly RecapSlot[],
+  orientation: RecapOrientation,
+): RecapSlot[] {
+  const kind = slots.find((slot) => slot.predicate.kind === "year" || slot.predicate.kind === "decade")?.predicate.kind;
+  if (!kind) return [];
+  const periods = slots
+    .filter((slot): slot is RecapSlot & { predicate: { kind: "year" | "decade"; value: number } } => slot.predicate.kind === kind)
+    .sort((first, second) => first.predicate.value - second.predicate.value);
+  return getRecapPeriodPosterWindow(periods, orientation);
 }
 
 function assignCompositionPages(
@@ -177,10 +233,9 @@ function normalizeStoredPeriodSlots(
   step: 1 | 10,
   entries?: readonly Entry[],
   filter: RecapFilter = DEFAULT_FILTER,
-  orientation: RecapOrientation = "landscape",
 ): RecapSlot[] {
   const hasStoredPopulations = slots.every((slot) => Number.isInteger(slot.populationCount));
-  if (!entries && !hasStoredPopulations) return latestCompatiblePeriodSlots(slots, step, orientation);
+  if (!entries && !hasStoredPopulations) return newestConsecutivePeriodSlots(slots, step);
 
   const populations = entries
     ? getRatedRecapEntries(entries, filter).reduce((counts, entry) => {
@@ -191,6 +246,13 @@ function normalizeStoredPeriodSlots(
         return counts;
       }, new Map<number, number>())
     : null;
+  const qualifyingPeriods = entries
+    ? new Set(getRatedRecapEntries(entries, filter).flatMap((entry) =>
+        entry.releaseDate && entry.overallRating !== null && entry.overallRating >= MIN_PERIOD_RATING
+          ? [periodValue(entry.releaseDate.year, step)]
+          : [],
+      ))
+    : null;
   const seenValues = new Set<number>();
   const periodSlots = slots
     .flatMap((slot): RecapSlot[] => {
@@ -198,14 +260,17 @@ function normalizeStoredPeriodSlots(
       if (seenValues.has(slot.predicate.value)) return [];
       seenValues.add(slot.predicate.value);
       const count = populations ? populations.get(slot.predicate.value) : slot.populationCount;
-      return count !== undefined && count >= MIN_PERIOD_POPULATION ? [{ ...slot, populationCount: count }] : [];
+      const isEligible = qualifyingPeriods
+        ? qualifyingPeriods.has(slot.predicate.value)
+        : count !== undefined && count >= 1;
+      return count !== undefined && isEligible ? [{ ...slot, populationCount: count }] : [];
     })
     .sort((first, second) => {
       const firstValue = first.predicate.kind === "any" || first.predicate.kind === "format" ? 0 : first.predicate.value;
       const secondValue = second.predicate.kind === "any" || second.predicate.kind === "format" ? 0 : second.predicate.value;
       return firstValue - secondValue;
     });
-  return latestCompatiblePeriodSlots(periodSlots, step, orientation);
+  return newestConsecutivePeriodSlots(periodSlots, step);
 }
 
 function recapMediaTypeLabel(type: Pick<MediaType, "id" | "name">): string {
@@ -275,7 +340,7 @@ function copyRecapFilter(filter: RecapFilter): RecapFilter {
       };
 }
 
-/** Normalize persisted legacy drafts without replacing their saved composition. */
+/** Normalize persisted drafts and fill missing periods in untouched legacy period layouts. */
 export function normalizeRecapComposition(
   value: unknown,
   entries?: readonly Entry[],
@@ -300,6 +365,25 @@ export function normalizeRecapComposition(
     : periodTemplate && !orientationChosen
       ? "landscape"
       : storedOrientation;
+  const expectedPeriodKind = source.templateId === "releaseYear" ? "year" : "decade";
+  const slotsMatchGeneratedPeriodShape = periodTemplate && source.slots.length > 0 && source.slots.every((slotValue) => {
+    if (!slotValue || typeof slotValue !== "object" || Array.isArray(slotValue)) return false;
+    const slot = slotValue as Record<string, unknown>;
+    const predicate = slot.predicate && typeof slot.predicate === "object" && !Array.isArray(slot.predicate)
+      ? slot.predicate as Record<string, unknown>
+      : null;
+    const entry = slot.entry;
+    return predicate?.kind === expectedPeriodKind && slot.rank === null &&
+      Boolean(entry && typeof entry === "object" && !Array.isArray(entry) &&
+        typeof (entry as Record<string, unknown>).id === "string") &&
+      (slot.titleOverride === null || slot.titleOverride === undefined);
+  });
+  const shouldExpandUntouchedPeriodDraft =
+    periodTemplate &&
+    source.rankingLabel === "canonical" &&
+    typeof source.createdAt === "string" &&
+    source.createdAt === source.updatedAt &&
+    slotsMatchGeneratedPeriodShape;
   const entriesById = entries ? new Map(entries.map((entry) => [entry.id, entry])) : null;
   const typesById = mediaTypes ? new Map(mediaTypes.map((type) => [type.id, type])) : null;
   const slots = source.slots.map((slotValue) => {
@@ -340,8 +424,17 @@ export function normalizeRecapComposition(
     return { ...slot, ...(label !== slot.label ? { label } : {}), entry: nextSnapshot };
   });
   let normalizedSlots = slots as RecapSlot[];
-  if (source.templateId === "releaseYear") normalizedSlots = normalizeStoredPeriodSlots(normalizedSlots, 1, entries, filter, orientation);
-  if (source.templateId === "decade") normalizedSlots = normalizeStoredPeriodSlots(normalizedSlots, 10, entries, filter, orientation);
+  if (source.templateId === "releaseYear") normalizedSlots = normalizeStoredPeriodSlots(normalizedSlots, 1, entries, filter);
+  if (source.templateId === "decade") normalizedSlots = normalizeStoredPeriodSlots(normalizedSlots, 10, entries, filter);
+  if (shouldExpandUntouchedPeriodDraft && entries) {
+    normalizedSlots = addMissingPeriodSlots(
+      normalizedSlots,
+      getRatedRecapEntries(entries, filter),
+      source.templateId === "releaseYear" ? 1 : 10,
+      source.templateId === "releaseYear" ? "releaseYear" : "decade",
+      mediaTypes ?? [],
+    );
+  }
   return {
     ...source,
     style,
@@ -477,19 +570,13 @@ function decadeOf(year: number): number {
   return Math.floor(year / 10) * 10;
 }
 
-const MIN_PERIOD_POPULATION = 5;
-const MIN_CONSECUTIVE_PERIODS = 2;
-const MAX_PERIOD_CARDS = 12;
-const PERIOD_GRID_COUNTS: Record<RecapOrientation, readonly number[]> = {
-  landscape: [12, 8, 6, 4, 3, 2],
-  portrait: [12, 9, 8, 6, 4, 3, 2],
-};
+const MIN_PERIOD_RATING = 8;
 
 function periodValue(year: number, step: 1 | 10): number {
   return step === 1 ? year : decadeOf(year);
 }
 
-function latestCompatiblePeriodSlots(slots: RecapSlot[], step: 1 | 10, orientation: RecapOrientation): RecapSlot[] {
+function newestConsecutivePeriodSlots(slots: RecapSlot[], step: 1 | 10): RecapSlot[] {
   const kind = step === 1 ? "year" : "decade";
   const byValue = new Map<number, RecapSlot>();
   for (const slot of slots) {
@@ -499,65 +586,89 @@ function latestCompatiblePeriodSlots(slots: RecapSlot[], step: 1 | 10, orientati
     if (first.predicate.kind !== kind || second.predicate.kind !== kind) return 0;
     return first.predicate.value - second.predicate.value;
   });
-  let bestRun: RecapSlot[] = [];
-  let currentRun: RecapSlot[] = [];
-  const newest = (run: RecapSlot[]) => {
-    const last = run[run.length - 1];
-    return last?.predicate.kind === kind ? last.predicate.value : -Infinity;
-  };
-  for (const slot of periodSlots) {
-    const previous = currentRun[currentRun.length - 1];
-    if (!previous || previous.predicate.kind === kind && slot.predicate.kind === kind && slot.predicate.value === previous.predicate.value + step) {
-      currentRun.push(slot);
-    } else currentRun = [slot];
-    if (currentRun.length > bestRun.length || (currentRun.length === bestRun.length && newest(currentRun) > newest(bestRun))) {
-      bestRun = [...currentRun];
-    }
+  let start = 0;
+  for (let index = 1; index < periodSlots.length; index += 1) {
+    const previous = periodSlots[index - 1].predicate;
+    const current = periodSlots[index].predicate;
+    if (previous.kind === kind && current.kind === kind && current.value !== previous.value + step) start = index;
   }
-  if (bestRun.length < MIN_CONSECUTIVE_PERIODS) return [];
-  const cardCount = PERIOD_GRID_COUNTS[orientation].find((count) => count <= Math.min(bestRun.length, MAX_PERIOD_CARDS));
-  return cardCount ? bestRun.slice(-cardCount).map((slot) => ({ ...slot, page: 0 })) : [];
+  return periodSlots.slice(start);
 }
 
-function selectedPeriodWindow(
-  allRated: readonly Entry[],
-  ranked: readonly { entry: Entry; rank: number }[],
+function addMissingPeriodSlots(
+  slots: RecapSlot[],
+  ratedEntries: readonly Entry[],
   step: 1 | 10,
-  orientation: RecapOrientation = "landscape",
+  templateId: "releaseYear" | "decade",
+  mediaTypes: readonly MediaType[],
+): RecapSlot[] {
+  const predicateKind = step === 1 ? "year" : "decade";
+  const existingValues = new Set(slots.flatMap((slot) =>
+    slot.predicate.kind === predicateKind ? [slot.predicate.value] : [],
+  ));
+  const populations = new Map<number, number>();
+  const qualifyingValues = new Set<number>();
+  for (const entry of ratedEntries) {
+    if (!entry.releaseDate) continue;
+    const value = periodValue(entry.releaseDate.year, step);
+    populations.set(value, (populations.get(value) ?? 0) + 1);
+    if (entry.overallRating !== null && entry.overallRating >= MIN_PERIOD_RATING) qualifyingValues.add(value);
+  }
+
+  const added = [...qualifyingValues]
+    .filter((value) => !existingValues.has(value))
+    .sort((first, second) => first - second)
+    .map((value, index): RecapSlot => {
+      const entry = highestRatedPeriodEntry(ratedEntries, step, value);
+      return {
+        id: `${templateId}-legacy-${value}-${index}`,
+        page: 0,
+        entry: entry ? snapshot(entry, mediaTypes) : null,
+        rank: null,
+        label: step === 1 ? String(value) : `${value}s`,
+        populationCount: populations.get(value) ?? 0,
+        predicate: predicateKind === "year" ? { kind: "year", value } : { kind: "decade", value },
+        titleOverride: null,
+      };
+    });
+  return newestConsecutivePeriodSlots([...slots, ...added], step);
+}
+
+function highestRatedPeriodEntry(entries: readonly Entry[], step: 1 | 10, value: number): Entry | null {
+  let best: Entry | null = null;
+  for (const entry of entries) {
+    if (!entry.releaseDate || entry.overallRating === null || entry.overallRating < MIN_PERIOD_RATING ||
+        periodValue(entry.releaseDate.year, step) !== value) continue;
+    if (!best || entry.overallRating > (best.overallRating ?? 0)) best = entry;
+  }
+  return best;
+}
+
+function getQualifyingPeriods(
+  allRated: readonly Entry[],
+  step: 1 | 10,
 ): RecapPeriodAvailability[] {
   const populations = new Map<number, number>();
+  const qualifyingPeriods = new Set<number>();
   for (const entry of allRated) {
     if (entry.releaseDate) {
       const value = periodValue(entry.releaseDate.year, step);
       populations.set(value, (populations.get(value) ?? 0) + 1);
+      if (entry.overallRating !== null && entry.overallRating >= MIN_PERIOD_RATING) {
+        qualifyingPeriods.add(value);
+      }
     }
   }
 
-  const hasRankedWinner = new Set(
-    ranked.flatMap(({ entry }) => entry.releaseDate ? [periodValue(entry.releaseDate.year, step)] : []),
-  );
   const eligible = [...populations]
-    .filter(([value, count]) => count >= MIN_PERIOD_POPULATION && hasRankedWinner.has(value))
+    .filter(([value]) => qualifyingPeriods.has(value))
     .sort(([first], [second]) => first - second)
     .map(([value, count]) => ({ value, label: step === 1 ? String(value) : `${value}s`, count }));
-
-  let bestRun: RecapPeriodAvailability[] = [];
-  let currentRun: RecapPeriodAvailability[] = [];
-  for (const period of eligible) {
-    const previous = currentRun[currentRun.length - 1];
-    if (!previous || period.value === previous.value + step) currentRun.push(period);
-    else currentRun = [period];
-
-    const bestNewest = bestRun[bestRun.length - 1]?.value ?? -Infinity;
-    const currentNewest = currentRun[currentRun.length - 1]?.value ?? -Infinity;
-    if (currentRun.length > bestRun.length || (currentRun.length === bestRun.length && currentNewest > bestNewest)) {
-      bestRun = [...currentRun];
-    }
+  let start = 0;
+  for (let index = 1; index < eligible.length; index += 1) {
+    if (eligible[index].value !== eligible[index - 1].value + step) start = index;
   }
-
-  if (bestRun.length < MIN_CONSECUTIVE_PERIODS) return [];
-  const cardCount = PERIOD_GRID_COUNTS[orientation].find((count) => count <= Math.min(bestRun.length, MAX_PERIOD_CARDS));
-  return cardCount ? bestRun.slice(-cardCount) : [];
+  return eligible.slice(start);
 }
 
 export function getRecapTemplates(
@@ -569,8 +680,8 @@ export function getRecapTemplates(
   const rated = getCanonicalRecapEntries(entries, tiers, mediaTypes, filter);
   const allRated = getRatedRecapEntries(entries, filter);
   const dates = allRated.filter((entry) => entry.releaseDate !== null);
-  const yearPeriods = selectedPeriodWindow(allRated, rated, 1, "landscape");
-  const decadePeriods = selectedPeriodWindow(allRated, rated, 10, "landscape");
+  const yearPeriods = getRecapPeriodPosterWindow(getQualifyingPeriods(allRated, 1), "landscape");
+  const decadePeriods = getRecapPeriodPosterWindow(getQualifyingPeriods(allRated, 10), "landscape");
   const placedTypeIds = new Set(rated.flatMap(({ entry }) => entry.mediaTypeId ? [entry.mediaTypeId] : []));
   const activeTypeIds = new Set(mediaTypes.filter((type) => type.archivedAt === null).map((type) => type.id));
   const typesWithFiveOrMore = new Set(
@@ -595,8 +706,8 @@ export function getRecapTemplates(
       { id: "topTen", requiredCount: 10, eligibleCount: rated.length, eligible: enoughWorks(10), reason: enoughWorks(10) ? null : "tooFewRated", missingReleaseDateCount: 0, periods: [] },
       { id: "challengers", requiredCount: 5, eligibleCount: rated.length, eligible: enoughWorks(5), reason: enoughWorks(5) ? null : "tooFewRated", missingReleaseDateCount: 0, periods: [] },
       { id: "grid3x3", requiredCount: 9, eligibleCount: rated.length, eligible: enoughWorks(9), reason: enoughWorks(9) ? null : "tooFewRated", missingReleaseDateCount: 0, periods: [] },
-      { id: "releaseYear", requiredCount: MIN_CONSECUTIVE_PERIODS, eligibleCount: yearPeriods.length, eligible: yearPeriods.length >= MIN_CONSECUTIVE_PERIODS, reason: yearPeriods.length >= MIN_CONSECUTIVE_PERIODS ? null : "tooFewYears", missingReleaseDateCount: allRated.length - dates.length, periods: yearPeriods },
-      { id: "decade", requiredCount: MIN_CONSECUTIVE_PERIODS, eligibleCount: decadePeriods.length, eligible: decadePeriods.length >= MIN_CONSECUTIVE_PERIODS, reason: decadePeriods.length >= MIN_CONSECUTIVE_PERIODS ? null : "tooFewDecades", missingReleaseDateCount: allRated.length - dates.length, periods: decadePeriods },
+      { id: "releaseYear", requiredCount: 1, eligibleCount: yearPeriods.length, eligible: yearPeriods.length >= 1, reason: yearPeriods.length >= 1 ? null : "tooFewYears", missingReleaseDateCount: allRated.length - dates.length, periods: yearPeriods },
+      { id: "decade", requiredCount: 1, eligibleCount: decadePeriods.length, eligible: decadePeriods.length >= 1, reason: decadePeriods.length >= 1 ? null : "tooFewDecades", missingReleaseDateCount: allRated.length - dates.length, periods: decadePeriods },
       { id: "format", requiredCount: 2, eligibleCount: typesWithFiveOrMore.size, eligible: typesWithFiveOrMore.size >= 2, reason: typesWithFiveOrMore.size >= 2 ? null : "tooFewFormats", missingReleaseDateCount: 0, periods: [] },
     ],
   };
@@ -671,12 +782,24 @@ function topByPredicate(
   return rated.find(({ entry }) => predicate(entry)) ?? null;
 }
 
+function periodWinner(
+  ranked: Array<{ entry: Entry; rank: number }>,
+  allRated: readonly Entry[],
+  step: 1 | 10,
+  value: number,
+): { entry: Entry; rank: number } | null {
+  const isInPeriod = (entry: Entry) => entry.releaseDate !== null && periodValue(entry.releaseDate.year, step) === value;
+  const canonical = topByPredicate(ranked, isInPeriod);
+  if (canonical) return canonical;
+  const entry = highestRatedPeriodEntry(allRated, step, value);
+  return entry ? { entry, rank: 0 } : null;
+}
+
 function getTemplateRows(
   templateId: RecapTemplateId,
   rated: Array<{ entry: Entry; rank: number }>,
   mediaTypes: readonly MediaType[],
   allRated: readonly Entry[],
-  orientation: RecapOrientation,
 ): RecapSlot[] {
   if (templateId === "topTen") {
     return rated.slice(0, 10).map((row, index) => createSlot(templateId, index, 0, row, mediaTypes, null, { kind: "any" }, index + 1));
@@ -688,16 +811,16 @@ function getTemplateRows(
     return rated.slice(0, 9).map((row, index) => createSlot(templateId, index, 0, row, mediaTypes, null, { kind: "any" }, index + 1));
   }
   if (templateId === "releaseYear") {
-    return selectedPeriodWindow(allRated, rated, 1, orientation).map((period, index) => {
+    return getQualifyingPeriods(allRated, 1).map((period, index) => {
       const year = period.value;
-      const row = topByPredicate(rated, (entry) => entry.releaseDate?.year === year);
+      const row = periodWinner(rated, allRated, 1, year);
       return createSlot(templateId, index, 0, row, mediaTypes, period.label, { kind: "year", value: year }, null, period.count);
     });
   }
   if (templateId === "decade") {
-    return selectedPeriodWindow(allRated, rated, 10, orientation).map((period, index) => {
+    return getQualifyingPeriods(allRated, 10).map((period, index) => {
       const decade = period.value;
-      const row = topByPredicate(rated, (entry) => entry.releaseDate !== null && decadeOf(entry.releaseDate.year) === decade);
+      const row = periodWinner(rated, allRated, 10, decade);
       return createSlot(templateId, index, 0, row, mediaTypes, period.label, { kind: "decade", value: decade }, null, period.count);
     });
   }
@@ -748,7 +871,7 @@ export function createRecapComposition(
     slots: assignCompositionPages(
       templateId,
       orientation,
-      getTemplateRows(templateId, rated, mediaTypes, allRated, orientation),
+      getTemplateRows(templateId, rated, mediaTypes, allRated),
     ),
     createdAt: now,
     updatedAt: now,
@@ -858,8 +981,8 @@ export function updateRecapComposition(
   if (next.templateId === "grid3x3") next.orientation = "portrait";
   else if (next.templateId === "selection" || !recapSupportsOrientation(next.templateId)) next.orientation = composition.orientation;
   if (patch.orientation && next.templateId !== "selection" && recapSupportsOrientation(next.templateId)) {
-    if (next.templateId === "releaseYear") next.slots = normalizeStoredPeriodSlots(next.slots, 1, undefined, next.filter, next.orientation);
-    if (next.templateId === "decade") next.slots = normalizeStoredPeriodSlots(next.slots, 10, undefined, next.filter, next.orientation);
+    if (next.templateId === "releaseYear") next.slots = normalizeStoredPeriodSlots(next.slots, 1, undefined, next.filter);
+    if (next.templateId === "decade") next.slots = normalizeStoredPeriodSlots(next.slots, 10, undefined, next.filter);
     next.slots = assignCompositionPages(next.templateId, next.orientation, next.slots);
   }
   return next;

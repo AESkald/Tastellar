@@ -3,6 +3,9 @@ import type { Entry, MediaType } from "../../../shared/bridge/libraryTypes";
 import {
   createRecapComposition,
   getDefaultRecapOrientation,
+  getRecapPeriodPosterGrid,
+  getRecapPeriodPosterWindow,
+  getVisibleRecapPeriodSlots,
   getCanonicalRecapEntries,
   getDefaultRecapStyle,
   getRecapReplacementCandidates,
@@ -165,7 +168,7 @@ describe("Recap canonical source and sparse eligibility", () => {
     expect(normalizeRecapFilter({ kind: "all", tagIds: [""] })).toBeNull();
   });
 
-  it("requires five works per period, counts after filters, and includes the current decade", () => {
+  it("counts all rated works after filters and includes the current decade", () => {
     const entries = [
       ...[2018, 2021, 2022, 2023].flatMap((year) =>
         Array.from({ length: 5 }, (_, index) => makeEntry(`${year}-${index}`, { year }))),
@@ -196,45 +199,203 @@ describe("Recap canonical source and sparse eligibility", () => {
     ]);
   });
 
-  it("omits period templates when qualifying buckets are too sparse or not consecutive", () => {
+  it("uses the newest uninterrupted qualifying run and permits one qualifying year", () => {
     const spacedEntries = [
       ...[2018, 2020, 2022].flatMap((year) =>
         Array.from({ length: 5 }, (_, index) => makeEntry(`${year}-${index}`, { year }))),
-      ...Array.from({ length: 4 }, (_, index) => makeEntry(`2024-sparse-${index}`, { year: 2024 })),
-      ...Array.from({ length: 5 }, (_, index) => makeEntry(`2025-${index}`, { year: 2025 })),
+      ...Array.from({ length: 4 }, (_, index) => makeEntry(`2024-low-${index}`, { year: 2024, score: 7 })),
+      ...Array.from({ length: 5 }, (_, index) => makeEntry(`2026-${index}`, { year: 2026 })),
     ];
     const tiers = [{ score: 8, placedIds: spacedEntries.map(({ id }) => id) }];
     const catalog = getRecapTemplates(spacedEntries, tiers, [makeType("book")]);
-    expect(catalog.templates.find(({ id }) => id === "releaseYear")).toMatchObject({ eligible: false, eligibleCount: 0, periods: [] });
+    expect(catalog.templates.find(({ id }) => id === "releaseYear")).toMatchObject({ eligible: true, eligibleCount: 1, periods: [
+      { value: 2026, label: "2026", count: 5 },
+    ] });
     expect(catalog.templates.find(({ id }) => id === "decade")).toMatchObject({ eligible: true, periods: [
       { value: 2010, label: "2010s", count: 5 },
       { value: 2020, label: "2020s", count: 19 },
     ] });
 
-    const sparseOnly = spacedEntries.filter((entry) => entry.releaseDate?.year === 2024 || entry.releaseDate?.year === 2025);
+    const sparseOnly = spacedEntries.filter((entry) => entry.releaseDate?.year === 2024 || entry.releaseDate?.year === 2026);
     const sparseOnlyTiers = [{ score: 8, placedIds: sparseOnly.map(({ id }) => id) }];
     const sparseCatalog = getRecapTemplates(sparseOnly, sparseOnlyTiers, [makeType("book")]);
-    expect(sparseCatalog.templates.find(({ id }) => id === "releaseYear")).toMatchObject({ eligible: false, eligibleCount: 0, periods: [] });
-    expect(createRecapComposition("releaseYear", sparseOnly, sparseOnlyTiers, [makeType("book")]).slots).toEqual([]);
+    expect(sparseCatalog.templates.find(({ id }) => id === "releaseYear")).toMatchObject({ eligible: true, eligibleCount: 1, periods: [
+      { value: 2026, label: "2026", count: 5 },
+    ] });
+    expect(createRecapComposition("releaseYear", sparseOnly, sparseOnlyTiers, [makeType("book")]).slots.map(({ label }) => label)).toEqual(["2026"]);
+
+    const laterRunEntries = [
+      makeEntry("2009-high", { year: 2009, score: 8 }),
+      makeEntry("2010-low", { year: 2010, score: 7 }),
+      ...Array.from({ length: 16 }, (_, index) => makeEntry(`later-${2011 + index}`, { year: 2011 + index, score: 8 })),
+    ];
+    const laterRunTiers = [8, 7].map((score) => ({
+      score,
+      placedIds: laterRunEntries.filter((entry) => entry.overallRating === score).map(({ id }) => id),
+    }));
+    const laterRun = createRecapComposition("releaseYear", laterRunEntries, laterRunTiers, [makeType("book")]);
+    expect(laterRun.slots.map(({ label }) => label)).toEqual(Array.from({ length: 16 }, (_, index) => String(2011 + index)));
   });
 
-  it("selects the newest compatible consecutive window and caps it at twelve cards", () => {
-    const entries = Array.from({ length: 13 * 6 }, (_, index) => {
-      const year = 2014 + Math.floor(index / 6);
+  it("includes a period for one rating of 8 and excludes periods with only 7s", () => {
+    const entries = [
+      makeEntry("2000-low-0", { year: 2001, score: 7 }),
+      makeEntry("2000-low-1", { year: 2002, score: 7 }),
+      makeEntry("2000-low-2", { year: 2003, score: 7 }),
+      makeEntry("2000-low-3", { year: 2004, score: 7 }),
+      makeEntry("2000-low-4", { year: 2005, score: 7 }),
+      makeEntry("2010-single-high", { year: 2018, score: 8 }),
+      makeEntry("2020-high-and-lows-0", { year: 2020, score: 8 }),
+      ...Array.from({ length: 4 }, (_, index) => makeEntry(`2020-high-and-lows-low-${index}`, { year: 2020, score: 7 })),
+      makeEntry("2021-single-high", { year: 2021, score: 8 }),
+      ...Array.from({ length: 5 }, (_, index) => makeEntry(`2022-only-low-${index}`, { year: 2022, score: 7 })),
+    ];
+    const tiers = [8, 7].map((score) => ({
+      score,
+      placedIds: entries.filter((entry) => entry.overallRating === score).map(({ id }) => id),
+    }));
+    const catalog = getRecapTemplates(entries, tiers, [makeType("book")]);
+    const years = catalog.templates.find(({ id }) => id === "releaseYear")!;
+    const decades = catalog.templates.find(({ id }) => id === "decade")!;
+
+    expect(years.periods).toEqual([
+      { value: 2020, label: "2020", count: 5 },
+      { value: 2021, label: "2021", count: 1 },
+    ]);
+    expect(decades.periods).toEqual([
+      { value: 2010, label: "2010s", count: 1 },
+      { value: 2020, label: "2020s", count: 11 },
+    ]);
+  });
+
+  it("includes unplaced 8+ periods and keeps canonical ranking when a bucket has one", () => {
+    const entries = [
+      makeEntry("unplaced-2013", { year: 2013, score: 9 }),
+      makeEntry("ranked-low-2012", { year: 2012, score: 7 }),
+      makeEntry("ranked-2014", { year: 2014, score: 8 }),
+      makeEntry("unplaced-higher-2014", { year: 2014, score: 10 }),
+      makeEntry("unplaced-low-2020", { year: 2020, score: 7 }),
+    ];
+    const tiers = [
+      { score: 8, placedIds: ["ranked-2014"] },
+      { score: 7, placedIds: ["ranked-low-2012"] },
+    ];
+    const types = [makeType("book")];
+    const catalog = getRecapTemplates(entries, tiers, types);
+    const years = catalog.templates.find(({ id }) => id === "releaseYear")!;
+    expect(years).toMatchObject({ eligible: true, eligibleCount: 2, requiredCount: 1, periods: [
+      { value: 2013, label: "2013", count: 1 },
+      { value: 2014, label: "2014", count: 2 },
+    ] });
+
+    const composition = createRecapComposition("releaseYear", entries, tiers, types);
+    expect(composition.slots.map(({ label, entry, rank }) => [label, entry?.id, rank])).toEqual([
+      ["2013", "unplaced-2013", null],
+      ["2014", "ranked-2014", null],
+    ]);
+  });
+
+  it("keeps the newest qualifying run in one complete-row poster", () => {
+    const entries = Array.from({ length: 14 * 6 }, (_, index) => {
+      const year = 2013 + Math.floor(index / 6);
       return makeEntry(`${year}-${index % 6}`, { year, tags: [index % 6 < 5 ? "included" : "excluded"] });
     });
     const tiers = [{ score: 8, placedIds: entries.map(({ id }) => id) }];
     const catalog = getRecapTemplates(entries, tiers, [makeType("book")], { kind: "all", tagIds: ["included"] });
     const releaseYear = catalog.templates.find(({ id }) => id === "releaseYear")!;
-    expect(releaseYear.eligibleCount).toBe(12);
-    expect(releaseYear.periods.map(({ value }) => value)).toEqual(Array.from({ length: 12 }, (_, index) => 2015 + index));
+    expect(releaseYear.eligibleCount).toBe(14);
+    expect(releaseYear.requiredCount).toBe(1);
+    expect(releaseYear.periods.map(({ value }) => value)).toEqual(Array.from({ length: 14 }, (_, index) => 2013 + index));
     expect(catalog.templates.find(({ id }) => id === "decade")?.periods).toEqual([
-      { value: 2010, label: "2010s", count: 30 },
+      { value: 2010, label: "2010s", count: 35 },
       { value: 2020, label: "2020s", count: 35 },
     ]);
+    const composition = createRecapComposition("releaseYear", entries, tiers, [makeType("book")], { kind: "all", tagIds: ["included"] });
+    expect(composition.slots.map(({ label, page }) => [label, page])).toEqual(
+      Array.from({ length: 14 }, (_, index) => [String(2013 + index), 0]),
+    );
+    expect(getVisibleRecapPeriodSlots(composition.slots, "landscape").map(({ label }) => label))
+      .toEqual(Array.from({ length: 14 }, (_, index) => String(2013 + index)));
   });
 
-  it("chooses poster-grid-compatible period counts by orientation without filler", () => {
+  it("crops only the oldest periods to complete equal rows and keeps the newest year", () => {
+    for (let available = 1; available <= 50; available += 1) {
+      for (const orientation of ["landscape", "portrait"] as const) {
+        const grid = getRecapPeriodPosterGrid(available, orientation);
+        const window = getRecapPeriodPosterWindow(
+          Array.from({ length: available }, (_, index) => index),
+          orientation,
+        );
+        expect(grid.rows * grid.columns).toBe(grid.count);
+        expect(grid.count).toBeLessThanOrEqual(available);
+        expect(window).toHaveLength(grid.count);
+        expect(window.at(-1)).toBe(available - 1);
+        expect(window[0]).toBe(available - grid.count);
+        if (available === 1) {
+          expect(grid).toMatchObject({ rows: 1, columns: 1 });
+        } else {
+          expect(grid.rows).toBeGreaterThanOrEqual(2);
+          expect(grid.rows).toBeLessThanOrEqual(4);
+        }
+      }
+    }
+
+    const expectedLandscape: Array<[number, number, number]> = [
+      [13, 12, 2015],
+      [17, 16, 2011],
+      [22, 21, 2006],
+      [24, 24, 2003],
+      [37, 32, 1995],
+    ];
+    for (const [available, visible, firstYear] of expectedLandscape) {
+      const periods = Array.from({ length: available }, (_, index) => ({
+        value: 2026 - available + 1 + index,
+        label: String(2026 - available + 1 + index),
+        count: 1,
+      }));
+      const grid = getRecapPeriodPosterGrid(available, "landscape");
+      const poster = getVisibleRecapPeriodSlots(
+        periods.map((period) => ({
+          id: period.label,
+          page: 0,
+          entry: null,
+          rank: null,
+          label: period.label,
+          populationCount: period.count,
+          predicate: { kind: "year" as const, value: period.value },
+          titleOverride: null,
+        })),
+        "landscape",
+      );
+      expect(grid.count).toBe(visible);
+      expect(grid.rows * grid.columns).toBe(visible);
+      expect(poster).toHaveLength(visible);
+      expect(poster[0].label).toBe(String(firstYear));
+      expect(poster.at(-1)?.label).toBe("2026");
+    }
+
+    const twentyTwoYears = Array.from({ length: 22 }, (_, index) =>
+      makeEntry(`year-${2005 + index}`, { year: 2005 + index }),
+    );
+    const tiers = [{ score: 8, placedIds: twentyTwoYears.map(({ id }) => id) }];
+    const catalog = getRecapTemplates(twentyTwoYears, tiers, [makeType("book")]);
+    const years = catalog.templates.find(({ id }) => id === "releaseYear")!;
+    expect(years.eligibleCount).toBe(21);
+    expect(years.periods.map(({ value }) => value)).toEqual(
+      Array.from({ length: 21 }, (_, index) => 2006 + index),
+    );
+
+    const fullDraft = createRecapComposition("releaseYear", twentyTwoYears, tiers, [makeType("book")]);
+    const portraitDraft = updateRecapComposition(fullDraft, { orientation: "portrait" });
+    const returnedToLandscape = updateRecapComposition(portraitDraft, { orientation: "landscape" });
+    expect(getVisibleRecapPeriodSlots(fullDraft.slots, "landscape").map(({ label }) => label))
+      .toEqual(Array.from({ length: 21 }, (_, index) => String(2006 + index)));
+    expect(getVisibleRecapPeriodSlots(portraitDraft.slots, "portrait")).toHaveLength(20);
+    expect(getVisibleRecapPeriodSlots(returnedToLandscape.slots, "landscape").map(({ label }) => label))
+      .toEqual(Array.from({ length: 21 }, (_, index) => String(2006 + index)));
+  });
+
+  it("preserves every period while changing the display orientation", () => {
     const entries = Array.from({ length: 9 * 5 }, (_, index) => {
       const year = 2018 + Math.floor(index / 5);
       return makeEntry(`${year}-${index % 5}`, { year });
@@ -242,15 +403,15 @@ describe("Recap canonical source and sparse eligibility", () => {
     const tiers = [{ score: 8, placedIds: entries.map(({ id }) => id) }];
     const types = [makeType("book")];
     const yearCatalog = getRecapTemplates(entries, tiers, types).templates.find(({ id }) => id === "releaseYear")!;
-    expect(yearCatalog.periods.map(({ value }) => value)).toEqual(Array.from({ length: 8 }, (_, index) => 2019 + index));
-    expect(yearCatalog.periods.reduce((total, period) => total + period.count, 0)).toBe(40);
+    expect(yearCatalog.periods.map(({ value }) => value)).toEqual(Array.from({ length: 9 }, (_, index) => 2018 + index));
+    expect(yearCatalog.periods.reduce((total, period) => total + period.count, 0)).toBe(45);
 
     const horizontal = createRecapComposition("releaseYear", entries, tiers, types);
     expect(horizontal.slots.map(({ predicate }) => predicate.kind === "year" ? predicate.value : null)).toEqual(yearCatalog.periods.map(({ value }) => value));
     const vertical = createRecapComposition("releaseYear", entries, tiers, types, undefined, { orientation: "portrait" });
     expect(vertical.slots).toHaveLength(9);
     const switchedToHorizontal = updateRecapComposition(vertical, { orientation: "landscape" });
-    expect(switchedToHorizontal.slots).toHaveLength(8);
+    expect(switchedToHorizontal.slots).toHaveLength(9);
     expect(switchedToHorizontal.slots.at(-1)?.label).toBe("2026");
 
     const reopenedPortrait = normalizeRecapComposition({ ...vertical, orientationChosen: true }, entries, types)!;
@@ -258,25 +419,34 @@ describe("Recap canonical source and sparse eligibility", () => {
     expect(reopenedPortrait.slots).toHaveLength(9);
     const migratedLegacyPortrait = normalizeRecapComposition({ ...vertical, orientationChosen: undefined }, entries, types)!;
     expect(migratedLegacyPortrait).toMatchObject({ orientation: "landscape", orientationChosen: false });
-    expect(migratedLegacyPortrait.slots).toHaveLength(8);
+    expect(migratedLegacyPortrait.slots).toHaveLength(9);
   });
 
-  it("repairs legacy period drafts from filtered library populations", () => {
-    const entries = Array.from({ length: 13 * 6 }, (_, index) => {
-      const year = 2014 + Math.floor(index / 6);
+  it("expands untouched legacy period drafts and preserves edited snapshots", () => {
+    const entries = Array.from({ length: 14 * 6 }, (_, index) => {
+      const year = 2013 + Math.floor(index / 6);
       return makeEntry(`${year}-${index % 6}`, { year, tags: [index % 6 < 5 ? "selected" : "excluded"] });
     });
     const tiers = [{ score: 8, placedIds: entries.map(({ id }) => id) }];
     const filter = { kind: "all" as const, tagIds: ["selected"] };
     const created = createRecapComposition("releaseYear", entries, tiers, [makeType("book")], filter);
     const legacySlots = created.slots
-      .filter(({ predicate }) => predicate.kind === "year" && [2015, 2016, 2018, 2019, 2020].includes(predicate.value))
+      .filter(({ predicate }) => predicate.kind === "year" && predicate.value >= 2015)
       .map(({ populationCount: _populationCount, ...slot }) => slot);
     const normalized = normalizeRecapComposition({ ...created, slots: legacySlots }, entries, [makeType("book")])!;
-    expect(normalized.slots.map(({ label, populationCount, page }) => [label, populationCount, page])).toEqual([
-      ["2018", 5, 0], ["2019", 5, 0], ["2020", 5, 0],
-    ]);
+    expect(normalized.slots.map(({ label, populationCount, page }) => [label, populationCount, page])).toEqual(
+      Array.from({ length: 14 }, (_, index) => [String(2013 + index), 5, 0]),
+    );
     expect(normalizeRecapComposition(created, [], [makeType("book")])?.slots).toEqual([]);
+
+    const edited = normalizeRecapComposition({
+      ...created,
+      updatedAt: "2026-01-02T00:00:00.000Z",
+      slots: legacySlots,
+    }, entries, [makeType("book")])!;
+    expect(edited.slots.map(({ label, page }) => [label, page])).toEqual(
+      Array.from({ length: 12 }, (_, index) => [String(2015 + index), 0]),
+    );
   });
 
   it("migrates legacy decade defaults to horizontal while preserving an explicit newer choice", () => {

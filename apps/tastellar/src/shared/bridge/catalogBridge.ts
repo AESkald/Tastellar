@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   CatalogCapability,
+  CatalogRemoteCover,
   CatalogSearchRequest,
   CatalogSearchResponse,
   ProviderCredentialInput,
@@ -112,4 +113,22 @@ export function searchCatalog(
     );
   }
   return invoke<CatalogSearchResponse>("search_catalog", { input });
+}
+
+/**
+ * Fetches fresh image bytes through the same provider-host-validated native
+ * downloader used by import retries, bypassing the recap presentation cache.
+ */
+export function downloadCatalogCoverSource(
+  cover: CatalogRemoteCover,
+): Promise<string | null> {
+  if (!native) {
+    return Promise.reject(
+      new Error("Catalog cover downloads are available only in the desktop app."),
+    );
+  }
+  return invoke<string | null>("load_recap_remote_cover", {
+    provider: cover.provider,
+    url: cover.url,
+  });
 }

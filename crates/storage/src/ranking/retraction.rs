@@ -245,7 +245,7 @@ mod tests {
 
     fn assert_archive_rejected(storage: &mut Storage, archive: &RankingArchive) {
         let tx = storage.conn.transaction().unwrap();
-        let result = Storage::import_ranking_archive(&tx, Some(archive));
+        let result = Storage::import_ranking_archive(&tx, Some(archive), false);
         assert!(matches!(result, Err(StorageError::Validation(_))));
         drop(tx);
     }
@@ -1130,7 +1130,7 @@ mod tests {
         legacy_boundary.legacy_unlock = false;
         legacy_boundary.unlock_judgment_ids = vec![old_judgment_id];
         let tx = storage.conn.transaction().unwrap();
-        Storage::import_ranking_archive(&tx, Some(&legacy_archive)).unwrap();
+        Storage::import_ranking_archive(&tx, Some(&legacy_archive), false).unwrap();
         tx.commit().unwrap();
         let normalized_snapshot: String = storage
             .conn
@@ -1247,7 +1247,7 @@ mod tests {
             frozen
         );
         let tx = storage.conn.transaction().unwrap();
-        Storage::import_ranking_archive(&tx, Some(&archive)).unwrap();
+        Storage::import_ranking_archive(&tx, Some(&archive), false).unwrap();
         tx.commit().unwrap();
 
         let mut too_small = archive.clone();
@@ -1333,7 +1333,7 @@ mod tests {
         tier.pending_reconcile = false;
 
         let tx = storage.conn.transaction().unwrap();
-        Storage::import_ranking_archive(&tx, Some(&legacy)).unwrap();
+        Storage::import_ranking_archive(&tx, Some(&legacy), false).unwrap();
         tx.commit().unwrap();
         let current = storage.export_ranking_archive().unwrap();
         assert_eq!(current.schema_version, 3);
@@ -1344,7 +1344,7 @@ mod tests {
             .all(|boundary| boundary.created_sequence == 0));
 
         let tx = storage.conn.transaction().unwrap();
-        Storage::import_ranking_archive(&tx, Some(&current)).unwrap();
+        Storage::import_ranking_archive(&tx, Some(&current), false).unwrap();
         tx.commit().unwrap();
 
         drop(storage);

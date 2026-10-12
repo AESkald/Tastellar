@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Download, type Locator, type Page } from "@playwright/test";
 
 type SampleArchive = {
   library: {
@@ -83,12 +83,8 @@ async function openRecap(page: Page) {
   await expect(page.locator(".recap-page")).toBeVisible();
 }
 
-async function expectPngDimensions(page: Page, width: number, height: number) {
-  const [download] = await Promise.all([
-    page.waitForEvent("download"),
-    page.getByRole("button", { name: "Export image" }).click(),
-  ]);
-  expect(download.suggestedFilename()).toBe("tastellar-recap.png");
+async function assertPngDimensions(download: Download, width: number, height: number, expectedFilename: string) {
+  expect(download.suggestedFilename()).toBe(expectedFilename);
   const path = await download.path();
   expect(path).toBeTruthy();
   const png = readFileSync(path!);
@@ -108,6 +104,50 @@ async function expectPngDimensions(page: Page, width: number, height: number) {
   console.log("Recap PNG export dimensions", JSON.stringify([actualWidth, actualHeight]));
 }
 
+async function expectPngDimensions(page: Page, width: number, height: number, pageCount = 1): Promise<Download[]> {
+  const filenames = Array.from({ length: pageCount }, (_, index) => pageCount > 1
+    ? `tastellar-recap-${index + 1}-of-${pageCount}.png`
+    : "tastellar-recap.png");
+  const waits = filenames.map((filename) => page.waitForEvent("download", {
+    predicate: (download) => download.suggestedFilename() === filename,
+  }));
+  const [downloads] = await Promise.all([
+    Promise.all(waits),
+    page.getByRole("button", { name: "Export image" }).click(),
+  ]);
+  await expect(page.getByText("Your Recap image is ready.", { exact: true })).toBeVisible();
+  expect(downloads).toHaveLength(pageCount);
+  for (const [index, download] of downloads.entries()) {
+    await assertPngDimensions(download, width, height, filenames[index]);
+  }
+  return downloads;
+}
+
+async function expectPngCoverSamples(page: Page, download: Download, samples: Array<{ x: number; y: number; color: number[] }>) {
+  const path = await download.path();
+  expect(path).toBeTruthy();
+  const base64 = readFileSync(path!).toString("base64");
+  const actual = await page.evaluate(async ({ imageBase64, points }) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${imageBase64}`;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Export PNG canvas context is unavailable");
+    context.drawImage(image, 0, 0);
+    return points.map(({ x, y }) => Array.from(context.getImageData(
+      Math.min(canvas.width - 1, Math.round(x * canvas.width)),
+      Math.min(canvas.height - 1, Math.round(y * canvas.height)), 1, 1,
+    ).data.slice(0, 3)));
+  }, { imageBase64: base64, points: samples });
+  expect(actual).toHaveLength(samples.length);
+  for (const [index, expected] of samples.entries()) {
+    actual[index].forEach((channel, channelIndex) => expect(Math.abs(channel - expected.color[channelIndex])).toBeLessThanOrEqual(3));
+  }
+}
+
 async function expectCanvasPainted(canvas: Locator) {
   await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => {
     const context = element.getContext("2d");
@@ -116,6 +156,67 @@ async function expectCanvasPainted(canvas: Locator) {
     ).data[3]);
   })).toBe(true);
 }
+
+test("Recap repaints a ready gallery canvas after returning from its editor", async ({ page }) => {
+  await page.addInitScript(() => {
+    const now = new Date().toISOString();
+    const entries = Array.from({ length: 10 }, (_, index) => ({
+      id: `ready-gallery-${index + 1}`,
+      importOrder: index,
+      version: 1,
+      title: `Ready gallery work ${index + 1}`,
+      disposition: "experienced",
+      mediaTypeId: null,
+      overallRating: 10,
+      coverAssetId: null,
+      releaseDate: null,
+      reviewText: "",
+      shortLabel: null,
+      criterionRatings: {},
+      tagIds: [],
+      createdAt: now,
+      updatedAt: now,
+    }));
+    const placed = entries.map((entry) => entry.id);
+    sessionStorage.setItem("tastellar.preview.revision.v1", "0");
+    sessionStorage.setItem("tastellar.preview.library.v1", JSON.stringify({
+      revision: 0,
+      entries,
+      mediaTypes: [],
+      criteria: [],
+      tags: [],
+    }));
+    sessionStorage.setItem("tastellar.preview.ranking.v1", JSON.stringify({
+      placements: entries.map((entry) => [entry.id, { score: 10, placed: true }]),
+      tierOrders: Array.from({ length: 10 }, (_, index) => [10 - index, {
+        placed: index === 0 ? placed : [],
+        unplaced: [],
+      }]),
+      sequences: [],
+      initialized: true,
+      session: null,
+      judgments: [],
+      latestMove: null,
+    }));
+  });
+
+  await openRecap(page);
+  const topTen = page.locator('.recap-feed-section[data-recap-template="topTen"]');
+  await topTen.scrollIntoViewIfNeeded();
+  await expect(topTen).toHaveAttribute("data-recap-scene-status", "ready");
+  const galleryCanvas = topTen.locator("canvas");
+  await expectCanvasPainted(galleryCanvas);
+  const readyPixels = await galleryCanvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
+
+  await topTen.locator(".recap-feed-poster").click();
+  const editorCanvas = page.locator(".recap-stage-canvas");
+  await expectCanvasPainted(editorCanvas);
+  await page.getByRole("button", { name: "All Recaps", exact: true }).click();
+
+  await expect(topTen).toHaveAttribute("data-recap-scene-status", "ready");
+  await expectCanvasPainted(galleryCanvas);
+  await expect.poll(() => galleryCanvas.evaluate((element: HTMLCanvasElement) => element.toDataURL())).toBe(readyPixels);
+});
 
 test.use({ acceptDownloads: true });
 
@@ -393,39 +494,182 @@ test("sparse Recap invites rating and ranking without a personal-selection poste
   await rankedContext.close();
 });
 
-test("Recap caps a 120-work release-year history at twelve fully covered periods", async ({ page }) => {
-  test.setTimeout(120_000);
-  const entryCount = 120;
-  await page.addInitScript((count) => {
+test("Recap resumes delayed covers after editing, filtering, and reordering", async ({ page }) => {
+  test.setTimeout(45_000);
+  const requested = new Set<string>();
+  const release = new Map<string, () => void>();
+  let selectedCoverAttempts = 0;
+  let coverBytes: Buffer;
+  await page.addInitScript(() => {
     const now = new Date().toISOString();
+    const mediaTypes = [{
+      id: "films", name: "Films", sortOrder: 0, iconKey: "film", criterionIds: [],
+      archivedAt: null, version: 1, createdAt: now, updatedAt: now,
+    }];
+    const entries = Array.from({ length: 11 }, (_, index) => ({
+      id: `delayed-work-${index + 1}`, importOrder: index, version: 1,
+      title: index === 10 ? "Delayed new cover media" : `Existing work ${index + 1}`,
+      disposition: "experienced", mediaTypeId: "films", overallRating: index < 10 ? 10 : 9,
+      coverAssetId: null,
+      remoteCover: index === 0 || index === 10 ? {
+        provider: "igdb",
+        url: `https://images.igdb.com/igdb/image/upload/t_cover_big/${index === 0 ? "gallery" : "selected"}-cover.jpg`,
+      } : null,
+      releaseDate: null, reviewText: "", shortLabel: null, criterionRatings: {}, tagIds: [],
+      createdAt: now, updatedAt: now,
+    }));
+    const placed = entries.slice(0, 10).map((entry) => entry.id);
+    const unplaced = [entries[10].id];
+    sessionStorage.setItem("tastellar.preview.revision.v1", "0");
+    sessionStorage.setItem("tastellar.preview.library.v1", JSON.stringify({ revision: 0, entries, mediaTypes, criteria: [], tags: [] }));
+    sessionStorage.setItem("tastellar.preview.ranking.v1", JSON.stringify({
+      placements: entries.map((entry, index) => [entry.id, { score: index < 10 ? 10 : 9, placed: index < 10 }]),
+      tierOrders: [[10, { placed, unplaced: [] }], [9, { placed: [], unplaced }]],
+      sequences: [[10, 10], [9, 1]], initialized: true, session: null, judgments: [], latestMove: null,
+    }));
+  });
+  await page.goto("/");
+  const coverBase64 = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 96;
+    canvas.height = 144;
+    const context = canvas.getContext("2d")!;
+    const gradient = context.createLinearGradient(0, 0, 96, 144);
+    gradient.addColorStop(0, "#f04159");
+    gradient.addColorStop(1, "#301042");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 96, 144);
+    return canvas.toDataURL("image/png").split(",")[1];
+  });
+  coverBytes = Buffer.from(coverBase64, "base64");
+  await page.route("https://images.igdb.com/**", async (route) => {
+    const name = new URL(route.request().url()).pathname.split("/").pop()!;
+    if (name === "selected-cover.jpg") {
+      selectedCoverAttempts += 1;
+      if (selectedCoverAttempts === 1) {
+        await route.fulfill({ status: 404, contentType: "image/png", body: "" });
+        return;
+      }
+    }
+    requested.add(name);
+    await new Promise<void>((resolve) => release.set(name, resolve));
+    await route.fulfill({
+      status: 200,
+      contentType: "image/png",
+      headers: { "access-control-allow-origin": "*" },
+      body: coverBytes,
+    });
+  });
+
+  const resumeAll = () => {
+    for (const resolve of release.values()) resolve();
+  };
+  try {
+    await page.getByRole("navigation", { name: "Main navigation" })
+      .getByRole("button", { name: "Recap", exact: true }).click();
+    const topTen = page.locator('.recap-feed-section[data-recap-template="topTen"]');
+    await topTen.scrollIntoViewIfNeeded();
+    await expect.poll(() => requested.has("gallery-cover.jpg"), { timeout: 5000 }).toBe(true);
+
+    await topTen.locator(".recap-feed-poster").click();
+    const canvas = page.locator(".recap-stage-canvas");
+    await expect(canvas).toBeVisible();
+
+    await page.getByRole("button", { name: "Choose types", exact: true }).click();
+    await page.locator(".recap-type-filters .recap-type-option").filter({ hasText: "Films" }).locator("input").check();
+    const slots = page.locator(".recap-slot-hit");
+    await slots.nth(0).click();
+    await page.getByRole("button", { name: "Choose a replacement", exact: true }).click();
+    await page.getByRole("option", { name: /Delayed new cover media/ }).click();
+    await expect.poll(() => selectedCoverAttempts, { timeout: 5000 }).toBe(2);
+
+    const beforeLoad = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
+    release.get("selected-cover.jpg")?.();
+    await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL()), { timeout: 5000 }).not.toBe(beforeLoad);
+    await expect(slots.nth(0)).toHaveAttribute("aria-label", /Delayed new cover media$/);
+    const loadedWithoutReordering = await canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL());
+    await page.screenshot({ path: "test-results/recap-delayed-cover-auto-retry.png", animations: "disabled" });
+
+    await slots.nth(1).click();
+    await expect(slots.nth(1)).toHaveAttribute("aria-label", /Delayed new cover media$/);
+    await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.toDataURL()), { timeout: 5000 }).not.toBe(loadedWithoutReordering);
+    release.get("gallery-cover.jpg")?.();
+    await page.waitForTimeout(100);
+    await page.screenshot({ path: "test-results/recap-delayed-cover-after-reorder.png", animations: "disabled" });
+
+    await page.getByRole("button", { name: "All Recaps", exact: true }).click();
+    await expect(topTen).toHaveAttribute("data-recap-scene-status", "ready", { timeout: 5000 });
+    await expectCanvasPainted(topTen.locator("canvas"));
+  } finally {
+    resumeAll();
+  }
+});
+
+test("period Recap posters keep balanced rows through the latest qualifying year", async ({ page }) => {
+  test.setTimeout(120_000);
+  const yearCount = 22;
+  const featuredCount = 22;
+  await page.addInitScript(() => {
+    const now = new Date().toISOString();
+    const years = Array.from({ length: 22 }, (_, index) => 2005 + index);
+    const populationForYear = (year: number) => year === 2005 ? 40 : year === 2006 ? 9 : year <= 2022 ? 9 : 8;
+    const featured = years.map((year, index) => ({
+      id: "period-winner-" + String(index + 1).padStart(3, "0"),
+      title: "Year poster winner " + year,
+      releaseDate: { year, month: null, day: null, precision: "year" },
+      overallRating: year === 2026 ? 9 : 8,
+    }));
+    const extras = years.flatMap((year) => Array.from(
+      { length: populationForYear(year) - 1 },
+      (_, index) => ({
+        id: "period-extra-" + year + "-" + String(index + 1).padStart(2, "0"),
+        title: "Year poster extra " + year + " " + String(index + 1),
+        releaseDate: { year, month: null, day: null, precision: "year" },
+        overallRating: 8,
+      }),
+    ));
     const mediaTypes = [
       { id: "books", name: "Books", iconKey: "book-open" },
       { id: "films", name: "Films", iconKey: "film" },
       { id: "games", name: "Games", iconKey: "gamepad-2" },
-    ].map((type, sortOrder) => ({ ...type, sortOrder, criterionIds: [], archivedAt: null, version: 1, createdAt: now, updatedAt: now }));
-    const entries = Array.from({ length: count }, (_, index) => ({
-      id: `perf-work-${String(index + 1).padStart(3, "0")}`,
-      importOrder: index,
+    ].map((type, sortOrder) => ({
+      ...type,
+      sortOrder,
+      criterionIds: [],
+      archivedAt: null,
       version: 1,
-      title: `Recap performance work ${String(index + 1).padStart(3, "0")}`,
-      shortLabel: `Performance ${index + 1}`,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    const entries = [...featured, ...extras].map((entry, importOrder) => ({
+      ...entry,
+      importOrder,
+      version: 1,
       disposition: "experienced",
-      mediaTypeId: mediaTypes[index % mediaTypes.length].id,
-      overallRating: 10 - Math.floor(index / 12),
+      mediaTypeId: mediaTypes[importOrder % mediaTypes.length].id,
       coverAssetId: null,
-      releaseDate: { year: 1907 + Math.floor(index / 5), month: null, day: null, precision: "year" },
       reviewText: "",
       criterionRatings: {},
       tagIds: [],
       createdAt: now,
       updatedAt: now,
     }));
+    if (entries.length !== 225) throw new Error("The period Recap fixture must contain 225 rated works");
     const tiers = Array.from({ length: 10 }, (_, index) => {
       const score = 10 - index;
-      return [score, { placed: entries.filter((entry) => entry.overallRating === score).map((entry) => entry.id), unplaced: [] }];
+      return [score, {
+        placed: entries.filter((entry) => entry.overallRating === score).map((entry) => entry.id),
+        unplaced: [],
+      }];
     });
     sessionStorage.setItem("tastellar.preview.revision.v1", "0");
-    sessionStorage.setItem("tastellar.preview.library.v1", JSON.stringify({ revision: 0, entries, mediaTypes, criteria: [], tags: [] }));
+    sessionStorage.setItem("tastellar.preview.library.v1", JSON.stringify({
+      revision: 0,
+      entries,
+      mediaTypes,
+      criteria: [],
+      tags: [],
+    }));
     sessionStorage.setItem("tastellar.preview.ranking.v1", JSON.stringify({
       placements: entries.map((entry) => [entry.id, { score: entry.overallRating, placed: true }]),
       tierOrders: tiers,
@@ -435,234 +679,231 @@ test("Recap caps a 120-work release-year history at twelve fully covered periods
       judgments: [],
       latestMove: null,
     }));
-  }, entryCount);
+  });
   await page.route(/\/src\/main\.tsx(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     let source = await response.text();
-    const bootstrap = `
-      if (!window.__recapPerfSeed) {
-        const __recapLibraryModule = performance.getEntriesByType("resource")
-          .map((entry) => entry.name)
-          .find((url) => url.includes("/src/shared/bridge/libraryBridge.ts?t="));
-        const __recapPerfBridge = await import(__recapLibraryModule || "/src/shared/bridge/libraryBridge.ts");
-        window.__recapPerfBridge = __recapPerfBridge;
-        const __recapPerfInitial = await __recapPerfBridge.loadLibrary();
-        let __recapPerfRevision = __recapPerfInitial.revision;
-        let __recapPerfSaved = 0;
-        for (let index = 0; index < ${entryCount}; index += 1) {
-          const cover = document.createElement("canvas");
-          cover.width = 96;
-          cover.height = 144;
-          const context = cover.getContext("2d");
-          if (!context) throw new Error("Canvas is unavailable in the Recap performance fixture");
-          const hue = index * 137.508 % 360;
-          const gradient = context.createLinearGradient(0, 0, 96, 144);
-          gradient.addColorStop(0, "hsl(" + hue + " 70% 60%)");
-          gradient.addColorStop(1, "hsl(" + ((hue + 90) % 360) + " 60% 28%)");
-          context.fillStyle = gradient;
-          context.fillRect(0, 0, cover.width, cover.height);
-          context.fillStyle = "#fff";
-          context.textAlign = "center";
-          context.font = "bold 17px Georgia";
-          context.fillText(String(index + 1).padStart(3, "0"), cover.width / 2, cover.height - 16);
-          const base64 = cover.toDataURL("image/png").split(",")[1];
-          const saved = await __recapPerfBridge.saveEntryCover(__recapPerfRevision, "perf-work-" + String(index + 1).padStart(3, "0"), "image/png", base64);
-          __recapPerfRevision = saved.revision;
-          __recapPerfSaved += saved.entries.some((entry) => entry.id === "perf-work-" + String(index + 1).padStart(3, "0") && entry.coverAssetId) ? 1 : 0;
-        }
-        window.__recapPerfSeed = { saved: __recapPerfSaved, revision: __recapPerfRevision };
-        __recapPerfBridge.clearEntryCoverCache();
-      }
-    `;
-    if (!source.includes("ReactDOM.createRoot(")) throw new Error("Unable to locate Vite React bootstrap for preview cover seeding");
-    source = source.replace("ReactDOM.createRoot(", `${bootstrap}\nReactDOM.createRoot(`);
+    const bootstrap = [
+      "if (!window.__recapPeriodSeed) {",
+      "  const bridgeUrl = performance.getEntriesByType('resource').map((entry) => entry.name).find((url) => url.includes('/src/shared/bridge/libraryBridge.ts?t='));",
+      "  const bridge = await import(bridgeUrl || '/src/shared/bridge/libraryBridge.ts');",
+      "  let revision = (await bridge.loadLibrary()).revision;",
+      "  let saved = 0;",
+      "  for (let index = 0; index < 22; index += 1) {",
+      "    const year = 2005 + index;",
+      "    const cover = document.createElement('canvas');",
+      "    cover.width = 96;",
+      "    cover.height = 144;",
+      "    const context = cover.getContext('2d');",
+      "    if (!context) throw new Error('Canvas is unavailable in the period Recap fixture');",
+      "    const hue = index * 137.508 % 360;",
+      "    const gradient = context.createLinearGradient(0, 0, 96, 144);",
+      "    gradient.addColorStop(0, 'hsl(' + hue + ' 70% 60%)');",
+      "    gradient.addColorStop(1, 'hsl(' + ((hue + 90) % 360) + ' 60% 28%)');",
+      "    context.fillStyle = gradient;",
+      "    context.fillRect(0, 0, cover.width, cover.height);",
+      "    context.fillStyle = '#fff';",
+      "    context.textAlign = 'center';",
+      "    context.font = 'bold 17px Georgia';",
+      "    context.fillText(String(year), cover.width / 2, cover.height - 16);",
+      "    const base64 = cover.toDataURL('image/png').split(',')[1];",
+      "    const id = 'period-winner-' + String(index + 1).padStart(3, '0');",
+      "    const result = await bridge.saveEntryCover(revision, id, 'image/png', base64);",
+      "    revision = result.revision;",
+      "    if (result.entries.some((entry) => entry.id === id && entry.coverAssetId)) saved += 1;",
+      "  }",
+      "  window.__recapPeriodSeed = { saved, revision };",
+      "  bridge.clearEntryCoverCache();",
+      "}",
+    ].join("\n");
+    if (!source.includes("ReactDOM.createRoot(")) throw new Error("Unable to locate Vite React bootstrap for period Recap cover seeding");
+    source = source.replace("ReactDOM.createRoot(", bootstrap + "\nReactDOM.createRoot(");
     await route.fulfill({ response, body: source });
   });
 
   await page.goto("/");
   await expect(page.getByText("Browser preview · changes last for this session", { exact: true })).toBeVisible();
-  await page.waitForTimeout(1_100);
-  const rendererMetrics = await page.evaluate(async (count) => {
-    const [bridge, domain, renderer] = await Promise.all([
+  await expect.poll(() => page.evaluate(() => (window as typeof window & {
+    __recapPeriodSeed?: { saved: number };
+  }).__recapPeriodSeed?.saved ?? 0)).toBe(featuredCount);
+
+  const periodMetrics = async (orientation: "landscape" | "portrait") => page.evaluate(async (selectedOrientation) => {
+    const [domain, renderer, bridge, rankingBridge] = await Promise.all([
       import("/src/features/recap/domain/recap.ts"),
       import("/src/rendering/recap/renderer.ts"),
-    ]).then(([domain, renderer]) => [
-      (window as typeof window & { __recapPerfBridge?: any }).__recapPerfBridge,
-      domain,
-      renderer,
+      import("/src/shared/bridge/libraryBridge.ts"),
+      import("/src/shared/bridge/rankingBridge.ts"),
     ]);
-    if (!bridge) throw new Error("App cover bridge was not seeded before React mounted");
     const library = await bridge.loadLibrary();
-    const seedStatus = (window as typeof window & { __recapPerfSeed?: { saved: number; revision: number } }).__recapPerfSeed;
-    const ranking = await (await import("/src/shared/bridge/rankingBridge.ts")).loadRanking();
+    const ranking = await rankingBridge.loadRanking();
     const mediaTypes = library.mediaTypes.filter((type) => !type.archivedAt);
-    const tiers = ranking.tiers.map((tier) => ({ score: tier.score, placedIds: tier.placedIds }));
-    const composition = domain.createRecapComposition("releaseYear", library.entries, tiers, mediaTypes, { kind: "all" }, {
-      id: "recap-perf-release-year",
-      orientation: "landscape",
-      style: "dark",
-      mode: "cover",
-      showTitles: true,
-      watermark: true,
-    });
-    const pageCount = renderer.recapPageCount(composition);
-    const pageRun = async () => {
-      const pageMs = [];
-      let resolvedImageNodes = 0;
-      const coverSamples = [];
-      for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
-        const started = performance.now();
-        const scene = await renderer.loadRecapScene(composition, (entryId, assetId) => bridge.loadEntryCover(entryId, assetId), { pageIndex });
-        pageMs.push(performance.now() - started);
-        resolvedImageNodes += scene.nodes.filter((node) => node.kind === "image" && node.image).length;
-        const rendered = renderer.renderRecapCanvas(scene);
-        const context = rendered.getContext("2d");
-        if (!context) throw new Error("Recap renderer canvas context is unavailable");
-        coverSamples.push(scene.nodes.filter((node) => node.kind === "image" && node.image).map((node) => {
-          const x = Math.round((node.x + node.width / 2) * rendered.width / scene.width);
-          const y = Math.round((node.y + node.height * 0.42) * rendered.height / scene.height);
-          return { x: (node.x + node.width / 2) / scene.width, y: (node.y + node.height * 0.42) / scene.height,
-            color: Array.from(context.getImageData(x, y, 1, 1).data.slice(0, 3)) };
-        }));
-      }
-      return { pageMs, resolvedImageNodes, coverSamples };
-    };
-    bridge.clearEntryCoverCache();
-    const coldStarted = performance.now();
-    const cold = await pageRun();
-    const coldMs = performance.now() - coldStarted;
-    const warmStarted = performance.now();
-    const warm = await pageRun();
-    const warmMs = performance.now() - warmStarted;
-    (window as typeof window & { __recapPerfExpectedSamples?: Array<Array<{ x: number; y: number; color: number[] }>> }).__recapPerfExpectedSamples = warm.coverSamples;
-    const cachedEntries = library.entries.filter((entry) => bridge.peekEntryCover(entry.id, entry.coverAssetId) !== null).length;
+    const composition = domain.createRecapComposition(
+      "releaseYear",
+      library.entries,
+      ranking.tiers.map((tier) => ({ score: tier.score, placedIds: tier.placedIds })),
+      mediaTypes,
+      { kind: "all" },
+      {
+        id: "period-e2e-" + selectedOrientation,
+        orientation: selectedOrientation,
+        style: "dark",
+        mode: "cover",
+        showTitles: true,
+        watermark: true,
+      },
+    );
+    const scene = await renderer.loadRecapScene(
+      composition,
+      (entryId, assetId) => bridge.loadEntryCover(entryId, assetId),
+    );
+    const slotsById = new Map(composition.slots.map((slot) => [slot.id, slot]));
     return {
-      browserPreviewEntries: library.entries.length,
-      seedStatus,
-      entriesWithCovers: library.entries.filter((entry) => entry.coverAssetId !== null).length,
-      pageCount,
-      coldMs,
-      warmMs,
-      coldPageP95Ms: [...cold.pageMs].sort((a, b) => a - b)[Math.floor(cold.pageMs.length * 0.95)] ?? 0,
-      warmPageP95Ms: [...warm.pageMs].sort((a, b) => a - b)[Math.floor(warm.pageMs.length * 0.95)] ?? 0,
-      coldResolvedImageNodes: cold.resolvedImageNodes,
-      warmResolvedImageNodes: warm.resolvedImageNodes,
-      cachedEntries,
-      count,
+      totalPeriods: composition.slots.length,
+      pageCount: scene.pageCount,
+      dimensions: [scene.width, scene.height],
+      visibleYears: scene.hitTargets.map((target) => {
+        const slot = slotsById.get(target.slotId);
+        return slot?.predicate.kind === "year" ? slot.predicate.value : null;
+      }),
+      labels: scene.nodes.filter((node) => node.kind === "text").map((node) => node.text),
+      images: scene.nodes.filter((node) => node.kind === "image" && node.image).length,
     };
-  }, entryCount);
-  expect(rendererMetrics.browserPreviewEntries).toBe(entryCount);
-  console.log("Recap preview cover seed status", JSON.stringify(rendererMetrics.seedStatus));
-  expect(rendererMetrics.entriesWithCovers).toBe(entryCount);
-  expect(rendererMetrics.cachedEntries).toBe(12);
-  expect(rendererMetrics.coldResolvedImageNodes).toBe(12);
-  expect(rendererMetrics.warmResolvedImageNodes).toBe(12);
-  expect(rendererMetrics.pageCount).toBe(1);
+  }, orientation);
+
+  const landscapeMetrics = await periodMetrics("landscape");
+  expect(landscapeMetrics.totalPeriods).toBe(yearCount);
+  expect(landscapeMetrics.pageCount).toBe(1);
+  expect(landscapeMetrics.visibleYears).toEqual(Array.from({ length: 21 }, (_, index) => 2006 + index));
+  expect(landscapeMetrics.labels).toContain("2026");
+  expect(landscapeMetrics.labels).not.toContain("2005");
+  expect(landscapeMetrics.images).toBe(21);
 
   await page.getByRole("navigation", { name: "Main navigation" })
     .getByRole("button", { name: "Recap", exact: true }).click();
   await expect(page.locator(".recap-page")).toBeVisible();
-  await expect(page.locator(".recap-count")).toContainText("120 rated works");
+  await expect(page.locator(".recap-count")).toContainText("225 rated works");
   const yearFeed = page.locator('.recap-feed-section[data-recap-template="releaseYear"]');
   await yearFeed.scrollIntoViewIfNeeded();
-  await expect(yearFeed.locator(".recap-feed-count-periods")).toContainText("12 periods");
-  await expect(yearFeed.locator(".recap-feed-count-periods")).toContainText("60 rated works");
+  await expect(yearFeed.locator(".recap-feed-count-periods"))
+    .toHaveText("21 periods · 185 rated works");
   await expect(yearFeed).toHaveAttribute("data-recap-scene-status", "ready");
-  const uiCoverProbe = await page.evaluate(async () => {
-    const bridge = (window as typeof window & { __recapPerfBridge?: typeof import("/src/shared/bridge/libraryBridge") }).__recapPerfBridge
-      ?? await import("/src/shared/bridge/libraryBridge.ts");
-    const recapBridge = await import("/src/shared/bridge/recapBridge.ts");
-    const library = await bridge.loadLibrary();
-    const entry = library.entries.find((item) => item.coverAssetId);
-    const source = entry ? await recapBridge.loadRecapCover(entry.id, entry.coverAssetId) : null;
-    const moduleUrls = performance.getEntriesByType("resource")
-      .map((item) => item.name)
-      .filter((url) => url.includes("libraryBridge.ts"));
-    return {
-      entryId: entry?.id ?? null,
-      assetId: entry?.coverAssetId ?? null,
-      sourceLoaded: Boolean(source),
-      sourcePrefix: source?.slice(0, 32) ?? null,
-      moduleUrls: [...new Set(moduleUrls)],
-    };
-  });
-  console.log("Recap UI cover probe", JSON.stringify(uiCoverProbe));
   await expectCanvasPainted(yearFeed.locator("canvas"));
-  const expectedSamples = await page.evaluate(() => (window as typeof window & { __recapPerfExpectedSamples?: Array<Array<{ x: number; y: number; color: number[] }>> }).__recapPerfExpectedSamples ?? []);
-  expect(expectedSamples.length).toBe(rendererMetrics.pageCount);
-  const expectCoverSamples = async (canvas: Locator, samples: Array<{ x: number; y: number; color: number[] }>) => {
-    const actual = await canvas.evaluate((element: HTMLCanvasElement, points: Array<{ x: number; y: number }>) => {
-      const context = element.getContext("2d");
-      if (!context) throw new Error("Recap UI canvas context is unavailable");
-      return points.map(({ x, y }) => Array.from(context.getImageData(
-        Math.round(x * element.width), Math.round(y * element.height), 1, 1,
-      ).data.slice(0, 3)));
-    }, samples);
-    expect(actual.length).toBe(samples.length);
-    for (const [index, expected] of samples.entries()) {
-      actual[index].forEach((channel, channelIndex) => expect(Math.abs(channel - expected.color[channelIndex])).toBeLessThanOrEqual(3));
-    }
-  };
-  await expectCoverSamples(yearFeed.locator("canvas"), expectedSamples[0]);
-  const yearFeedDimensions = await yearFeed.locator("canvas").evaluate((element: HTMLCanvasElement) => [element.width, element.height]);
-  await page.screenshot({ path: "test-results/recap-120-covers-gallery.png", fullPage: true, animations: "disabled" });
+  await yearFeed.screenshot({
+    path: "test-results/recap-years-2006-2026-gallery.png",
+    animations: "disabled",
+  });
+
   await yearFeed.locator(".recap-feed-poster").click();
   const canvas = page.locator(".recap-stage-canvas");
-  const pageNext = page.getByRole("button", { name: "Next page" });
   await expect(page.getByRole("button", { name: "Horizontal", exact: true })).toHaveAttribute("aria-pressed", "true");
-  expect(await canvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height])).toEqual(yearFeedDimensions);
-  await expectCoverSamples(canvas, expectedSamples[0]);
-  const navigationMs: number[] = [];
-  let currentPage = 0;
-  const seenPages = new Set([currentPage]);
-  await page.screenshot({ path: "test-results/recap-120-covers-editor-first-page.png", fullPage: true, animations: "disabled" });
+  await expectCanvasPainted(canvas);
+  const pageNext = page.getByRole("button", { name: "Next page" });
+  await expect(pageNext).toHaveCount(0);
+
+  const inspectGrid = async (expectedRows: number, expectedColumns: number, expectedLatestYear: number) => {
+    await expect(page.locator(".recap-slot-hit")).toHaveCount(expectedRows * expectedColumns);
+    const result = await page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>(".recap-stage-canvas");
+      if (!canvas) throw new Error("The period Recap canvas is missing");
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".recap-slot-hit"));
+      const positions = buttons.map((button) => {
+        const rect = button.getBoundingClientRect();
+        return {
+          x: Math.round(rect.left / 4),
+          y: Math.round(rect.top / 4),
+          label: button.getAttribute("aria-label") ?? "",
+        };
+      });
+      const rowCounts = new Map<number, number>();
+      positions.forEach(({ y }) => rowCounts.set(y, (rowCounts.get(y) ?? 0) + 1));
+      return {
+        columns: [...new Set(positions.map(({ x }) => x))].length,
+        rowCounts: [...rowCounts.values()],
+        labels: positions.map(({ label }) => label),
+      };
+    });
+    expect(result.columns).toBe(expectedColumns);
+    expect(result.rowCounts).toEqual(Array.from({ length: expectedRows }, () => expectedColumns));
+    expect(result.labels.at(-1)).toMatch(new RegExp(String(expectedLatestYear) + "$"));
+    await expect(page.locator(".recap-slot-hit").last())
+      .toHaveAttribute("aria-label", new RegExp(String(expectedLatestYear) + "$"));
+  };
+
+  const latestCoverSample = async (expectedYear: number) => page.evaluate((year) => {
+    const canvas = document.querySelector<HTMLCanvasElement>(".recap-stage-canvas");
+    const target = Array.from(document.querySelectorAll<HTMLButtonElement>(".recap-slot-hit")).at(-1);
+    if (!canvas || !target) throw new Error("The latest period has no visible poster slot");
+    const label = target.getAttribute("aria-label") ?? "";
+    if (!label.endsWith(String(year))) throw new Error("The latest visible poster slot does not match year " + year);
+    const canvasRect = canvas.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const x = (targetRect.left + targetRect.width / 2 - canvasRect.left) / canvasRect.width;
+    const y = (targetRect.top + targetRect.height * 0.42 - canvasRect.top) / canvasRect.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Recap canvas context is unavailable");
+    const pixel = context.getImageData(
+      Math.min(canvas.width - 1, Math.round(x * canvas.width)),
+      Math.min(canvas.height - 1, Math.round(y * canvas.height)),
+      1,
+      1,
+    ).data;
+    return { x, y, color: Array.from(pixel.slice(0, 3)) };
+  }, expectedYear);
+
   const landscapeDimensions = await canvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height]);
   expect(landscapeDimensions[0]).toBeGreaterThan(landscapeDimensions[1]);
+  await inspectGrid(3, 7, 2026);
+  await page.screenshot({ path: "test-results/recap-years-2006-2026-landscape-editor.png", fullPage: true, animations: "disabled" });
+  const landscapeSample = await latestCoverSample(2026);
+  const landscapeDownload = (await expectPngDimensions(page, landscapeDimensions[0], landscapeDimensions[1]))[0];
+  await expectPngCoverSamples(page, landscapeDownload, [landscapeSample]);
+  await landscapeDownload.saveAs("test-results/recap-years-2006-2026-landscape.png");
+
   await page.getByRole("button", { name: "Vertical", exact: true }).click();
   await expect(page.getByRole("button", { name: "Vertical", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height])).not.toEqual(landscapeDimensions);
+  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height]))
+    .not.toEqual(landscapeDimensions);
+  await expectCanvasPainted(canvas);
   const portraitDimensions = await canvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height]);
   expect(portraitDimensions[1]).toBeGreaterThan(portraitDimensions[0]);
-  await expectCanvasPainted(canvas);
-  await page.screenshot({ path: "test-results/recap-period-portrait-editor.png", fullPage: true, animations: "disabled" });
-  await expectPngDimensions(page, portraitDimensions[0], portraitDimensions[1]);
-  console.log("Recap period portrait export dimensions", JSON.stringify(portraitDimensions));
+  const portraitMetrics = await periodMetrics("portrait");
+  expect(portraitMetrics.totalPeriods).toBe(yearCount);
+  expect(portraitMetrics.pageCount).toBe(1);
+  expect(portraitMetrics.visibleYears).toEqual(Array.from({ length: 20 }, (_, index) => 2007 + index));
+  expect(portraitMetrics.labels).toContain("2026");
+  expect(portraitMetrics.labels).not.toContain("2005");
+  expect(portraitMetrics.labels).not.toContain("2006");
+  expect(portraitMetrics.images).toBe(20);
+  await inspectGrid(4, 5, 2026);
+  await page.screenshot({ path: "test-results/recap-years-2007-2026-portrait-editor.png", fullPage: true, animations: "disabled" });
+  const portraitSample = await latestCoverSample(2026);
+  const portraitDownload = (await expectPngDimensions(page, portraitDimensions[0], portraitDimensions[1]))[0];
+  await expectPngCoverSamples(page, portraitDownload, [portraitSample]);
+  await portraitDownload.saveAs("test-results/recap-years-2007-2026-portrait.png");
+
   await page.getByRole("button", { name: "Horizontal", exact: true }).click();
   await expect(page.getByRole("button", { name: "Horizontal", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height])).toEqual(landscapeDimensions);
-  await page.screenshot({ path: "test-results/recap-period-landscape-editor.png", fullPage: true, animations: "disabled" });
-  await expectPngDimensions(page, landscapeDimensions[0], landscapeDimensions[1]);
-  console.log("Recap period landscape export dimensions", JSON.stringify(landscapeDimensions));
-  while (await pageNext.count() && await pageNext.isEnabled()) {
-    const started = Date.now();
-    await pageNext.click();
-    currentPage += 1;
-    await expectCoverSamples(canvas, expectedSamples[currentPage]);
-    await expectCanvasPainted(canvas);
-    navigationMs.push(Date.now() - started);
-    seenPages.add(currentPage);
-  }
-  expect(seenPages.size).toBe(rendererMetrics.pageCount);
-  await page.screenshot({ path: "test-results/recap-120-covers-editor-last-page.png", fullPage: true, animations: "disabled" });
+  await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height]))
+    .toEqual(landscapeDimensions);
+  await expectCanvasPainted(canvas);
+  await inspectGrid(3, 7, 2026);
 
   await page.getByRole("button", { name: "All Recaps", exact: true }).click();
   const decadeFeed = page.locator('[data-recap-template="decade"]');
   await decadeFeed.scrollIntoViewIfNeeded();
-  await expect(decadeFeed.locator(".recap-feed-count-periods")).toContainText("4 periods");
+  await expect(decadeFeed.locator(".recap-feed-count-periods"))
+    .toHaveText("3 periods · 225 rated works");
+  await expect(decadeFeed).toHaveAttribute("data-recap-scene-status", "ready");
   await decadeFeed.locator(".recap-feed-poster").click();
   const decadeCanvas = page.locator(".recap-stage-canvas");
-  await expect.poll(() => decadeCanvas.evaluate((element: HTMLCanvasElement) => Boolean(element.width && element.height && element.getContext("2d")?.getImageData(2, 2, 1, 1).data[3]))).toBe(true);
-  const decadeHits = page.locator(".recap-slot-hit");
-  await expect(decadeHits).toHaveCount(4);
-  const decadeLandscapeDimensions = await decadeCanvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height]);
-  expect(decadeLandscapeDimensions[0]).toBeGreaterThan(decadeLandscapeDimensions[1]);
-  await page.screenshot({ path: "test-results/recap-decade-poster-landscape.png", fullPage: true, animations: "disabled" });
-  await expectPngDimensions(page, decadeLandscapeDimensions[0], decadeLandscapeDimensions[1]);
-  await page.getByRole("button", { name: "Vertical", exact: true }).click();
-  await expect.poll(() => decadeCanvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height])).not.toEqual(decadeLandscapeDimensions);
-  const decadePortraitDimensions = await decadeCanvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height]);
-  expect(decadePortraitDimensions[1]).toBeGreaterThan(decadePortraitDimensions[0]);
-  await page.screenshot({ path: "test-results/recap-decade-poster-portrait.png", fullPage: true, animations: "disabled" });
-  await expectPngDimensions(page, decadePortraitDimensions[0], decadePortraitDimensions[1]);
-  console.log("Recap 120-cover timings", JSON.stringify({ ...rendererMetrics, uiPageCount: seenPages.size, uiNavigationMedianMs: [...navigationMs].sort((a, b) => a - b)[Math.floor(navigationMs.length / 2)] ?? 0, uiNavigationMaxMs: Math.max(0, ...navigationMs) }));
+  await expectCanvasPainted(decadeCanvas);
+  await expect(page.locator(".recap-slot-hit")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Next page" })).toHaveCount(0);
+  await expect(page.locator(".recap-slot-hit").last())
+    .toHaveAttribute("aria-label", /2026$/);
+  const decadeDimensions = await decadeCanvas.evaluate((element: HTMLCanvasElement) => [element.width, element.height]);
+  const decadeSample = await latestCoverSample(2026);
+  const decadeDownload = (await expectPngDimensions(page, decadeDimensions[0], decadeDimensions[1]))[0];
+  await expectPngCoverSamples(page, decadeDownload, [decadeSample]);
+  await decadeDownload.saveAs("test-results/recap-decades-2000-2020.png");
 });

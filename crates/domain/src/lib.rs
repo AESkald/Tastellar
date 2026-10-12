@@ -382,6 +382,14 @@ pub struct LibraryViewFilters {
     pub media_types: Vec<String>,
     pub tags: Vec<String>,
     pub tag_mode: String,
+    // Keep the retired fields in their historical serialization position so
+    // old portable checksums can still be verified before normalization.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "minScore")]
+    #[doc(hidden)]
+    pub legacy_min_score: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxScore")]
+    #[doc(hidden)]
+    pub legacy_max_score: Option<String>,
     pub min_year: String,
     pub max_year: String,
     pub cover: String,
@@ -429,6 +437,26 @@ pub struct HomeState {
     pub taste_inputs: BTreeMap<String, i32>,
     pub preferences: Preferences,
     pub workspace: Workspace,
+}
+
+/// Apply schema-independent cleanup to a typed home snapshot.
+///
+/// This is deliberately separate from portable-envelope version steps: the
+/// same retired transient fields can occur in live database rows and in more
+/// than one historical archive format.
+pub fn normalize_home_state(home: &mut HomeState) {
+    normalize_workspace(&mut home.workspace);
+}
+
+/// Normalize retired fields in a workspace snapshot after it has been
+/// deserialized with the current typed schema.
+pub fn normalize_workspace(workspace: &mut Workspace) {
+    for tab in &mut workspace.tabs {
+        if let Some(view) = &mut tab.library_view {
+            view.filters.legacy_min_score = None;
+            view.filters.legacy_max_score = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

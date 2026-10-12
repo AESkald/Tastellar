@@ -11,11 +11,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tastellar_domain::{
-    blank_guidelines, validate_batch_entry_update, validate_criterion, validate_entry,
-    validate_guidelines, validate_media_type, validate_preferences, validate_profile, validate_tag,
-    validate_taste_inputs, validate_workspace, BatchEntryUpdateInput, Criterion, CriterionInput,
-    Entry, EntryInput, ExternalIdentity, HomeState, LibraryState, MediaType, MediaTypeInput,
-    Preferences, Profile, ProfileInput, ReleaseDate, Tag, TagInput, Workspace,
+    blank_guidelines, normalize_home_state, normalize_workspace, validate_batch_entry_update,
+    validate_criterion, validate_entry, validate_guidelines, validate_media_type,
+    validate_preferences, validate_profile, validate_tag, validate_taste_inputs,
+    validate_workspace, BatchEntryUpdateInput, Criterion, CriterionInput, Entry, EntryInput,
+    ExternalIdentity, HomeState, LibraryState, MediaType, MediaTypeInput, Preferences, Profile,
+    ProfileInput, ReleaseDate, Tag, TagInput, Workspace,
 };
 use thiserror::Error;
 
@@ -1188,14 +1189,16 @@ impl Storage {
         let preferences = serde_json::from_str(&preferences_json)?;
         let workspace = serde_json::from_str(&workspace_json)?;
         tx.commit()?;
-        Ok(HomeState {
+        let mut home = HomeState {
             version,
             profile,
             guidelines,
             taste_inputs,
             preferences,
             workspace,
-        })
+        };
+        normalize_home_state(&mut home);
+        Ok(home)
     }
 
     pub fn load_library(&self) -> Result<LibraryState, StorageError> {
@@ -2322,8 +2325,9 @@ impl Storage {
     pub fn save_workspace(
         &mut self,
         expected_version: i64,
-        workspace: Workspace,
+        mut workspace: Workspace,
     ) -> Result<HomeState, StorageError> {
+        normalize_workspace(&mut workspace);
         validate_workspace(&workspace)?;
         let tx = self.conn.transaction()?;
         Self::check_version(&tx, expected_version)?;
@@ -2462,10 +2466,11 @@ impl Storage {
             return Err(StorageError::Validation("Home backup exceeds 50 MB".into()));
         }
         let bytes = fs::read(path)?;
-        let backup: HomeBackup = serde_json::from_slice(&bytes)?;
+        let mut backup: HomeBackup = serde_json::from_slice(&bytes)?;
         if backup.format != "tastellar-home" || backup.format_version != 1 {
             return Err(StorageError::UnsupportedVersion);
         }
+        normalize_home_state(&mut backup.state);
         validate_profile(&ProfileInput {
             nickname: backup.state.profile.nickname.clone(),
             stated_tastes: backup.state.profile.stated_tastes.clone(),
@@ -3995,6 +4000,8 @@ mod tests {
                     max_year: String::new(),
                     cover: "any".into(),
                     criteria_complete: false,
+                    legacy_min_score: None,
+                    legacy_max_score: None,
                 },
                 table_columns: Vec::new(),
                 table_sort: table_sort.into(),
@@ -4012,6 +4019,64 @@ mod tests {
             );
         }
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_workspace_load_and_save_normalize_retired_score_filters() {
+        let root = test_root("retired-score-filter-normalization");
+        let mut storage = Storage::open(&root).unwrap();
+        let mut workspace = storage.load_home().unwrap().workspace;
+        workspace.tabs[0].library_view = Some(tastellar_domain::LibraryViewSnapshot {
+            active_group_id: "all".into(),
+            selected_entry_id: None,
+            list_mode: "covers".into(),
+            search_text: String::new(),
+            include_review_search: false,
+            include_tag_search: false,
+            within_current_filters: false,
+            filters: tastellar_domain::LibraryViewFilters {
+                media_types: Vec::new(),
+                tags: Vec::new(),
+                tag_mode: "any".into(),
+                min_year: String::new(),
+                max_year: String::new(),
+                cover: "any".into(),
+                criteria_complete: false,
+                legacy_min_score: Some("7".into()),
+                legacy_max_score: Some("9".into()),
+            },
+            table_columns: Vec::new(),
+            table_sort: "title".into(),
+            panel_mode: "details".into(),
+            scroll_top: 0.0,
+        });
+        let old_json = serde_json::to_string(&workspace).unwrap();
+        storage
+            .conn
+            .execute("UPDATE workspace SET json=?1 WHERE id=1", [&old_json])
+            .unwrap();
+
+        let loaded = storage.load_home().unwrap();
+        let view = loaded.workspace.tabs[0].library_view.as_ref().unwrap();
+        assert_eq!(view.filters.legacy_min_score, None);
+        assert_eq!(view.filters.legacy_max_score, None);
+        assert_eq!(view.table_sort, "title");
+
+        // A normal workspace write makes the cleanup durable in the live row.
+        storage
+            .save_workspace(loaded.version, loaded.workspace)
+            .unwrap();
+        let saved_json: String = storage
+            .conn
+            .query_row("SELECT json FROM workspace WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(!saved_json.contains("minScore"));
+        assert!(!saved_json.contains("maxScore"));
+
+        drop(storage);
         fs::remove_dir_all(root).unwrap();
     }
 

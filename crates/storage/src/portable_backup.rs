@@ -15,10 +15,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tastellar_domain::{
-    validate_criterion, validate_entry, validate_guidelines, validate_media_type,
-    validate_preferences, validate_profile, validate_tag, validate_taste_inputs,
-    validate_workspace, CriterionInput, Entry, EntryInput, HomeState, LibraryState,
-    LibraryViewSnapshot, MediaTypeInput, Profile, ProfileInput, TagInput,
+    normalize_home_state, validate_criterion, validate_entry, validate_guidelines,
+    validate_media_type, validate_preferences, validate_profile, validate_tag,
+    validate_taste_inputs, validate_workspace, CriterionInput, Entry, EntryInput, HomeState,
+    LibraryState, LibraryViewSnapshot, MediaTypeInput, Profile, ProfileInput, TagInput,
 };
 
 const FORMAT: &str = "tastellar-library";
@@ -308,7 +308,7 @@ impl Storage {
                 "Archive is larger than the supported import limit".into(),
             ));
         }
-        let (archive, original_archive): (PortableArchive, _) = deserialize_exact(&bytes)?;
+        let (mut archive, original_archive): (PortableArchive, _) = deserialize_exact(&bytes)?;
         let manifest = &archive.manifest;
         if manifest.format != FORMAT
             || ![
@@ -338,8 +338,11 @@ impl Storage {
         let original_home = original_archive
             .get("home")
             .ok_or_else(|| StorageError::Validation("Archive is missing its Home data".into()))?;
+        let original_library = original_archive.get("library").ok_or_else(|| {
+            StorageError::Validation("Archive is missing its Library data".into())
+        })?;
         let home_bytes = serialize_home_for_verification(&archive.home, original_home)?;
-        let library_bytes = serde_json::to_vec_pretty(&archive.library)?;
+        let library_bytes = serialize_library_for_verification(&archive.library, original_library)?;
         let history_bytes = serde_json::to_vec_pretty(&archive.history)?;
         verify_virtual_file(manifest, HOME_PATH, &home_bytes)?;
         verify_virtual_file(manifest, LIBRARY_PATH, &library_bytes)?;
@@ -470,6 +473,12 @@ impl Storage {
             });
         }
 
+        // Apply portable schema migrations only after validating the source
+        // bytes and their checksums. The migration sequence is the archive
+        // equivalent of the sequential SQLite upgrade path below Storage::open.
+        let source_format_version = archive.manifest.format_version;
+        let import_orders = migrate_portable_archive_to_current(&mut archive)?;
+
         // Keep a complete recovery archive before replacing the active state.
         let backups = self.root.join("backups");
         fs::create_dir_all(&backups)?;
@@ -493,9 +502,18 @@ impl Storage {
                 params![asset.hash,asset.path,asset.mime_type,asset.byte_length as i64,asset.width as i64,asset.height as i64,now_epoch()],
             )?;
         }
-        let import_orders = archive_import_orders(&library, &history, manifest.format_version)?;
-        replace_state_in_transaction(&tx, &home, &library, &history, &import_orders)?;
-        Self::import_ranking_archive(&tx, history.ranking.as_ref())?;
+        replace_state_in_transaction(
+            &tx,
+            &archive.home,
+            &archive.library,
+            &archive.history,
+            &import_orders,
+        )?;
+        Self::import_ranking_archive(
+            &tx,
+            archive.history.ranking.as_ref(),
+            source_format_version < FORMAT_VERSION,
+        )?;
         replace_provider_credentials_in_transaction(&tx, &archive.provider_credentials)?;
         tx.execute("UPDATE metadata SET version=version+1 WHERE id=1", [])?;
         tx.commit()?;
@@ -1052,6 +1070,81 @@ fn serialize_home_for_verification(
     Ok(serde_json::to_vec_pretty(&projected)?)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibraryForVerification<'a> {
+    revision: i64,
+    entries: &'a [Entry],
+    media_types: Vec<MediaTypeForVerification<'a>>,
+    criteria: &'a [tastellar_domain::Criterion],
+    tags: &'a [tastellar_domain::Tag],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaTypeForVerification<'a> {
+    id: &'a str,
+    name: &'a str,
+    sort_order: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_key: Option<&'a str>,
+    criterion_ids: &'a [String],
+    archived_at: &'a Option<String>,
+    version: i64,
+    created_at: &'a str,
+    updated_at: &'a str,
+}
+
+/// Recreate Library JSON using the fields present in the input envelope.
+/// Current archives use the current typed schema verbatim. The projection
+/// below is a frozen version-1 source schema: v1 predates `iconKey`, so that
+/// typed default must not be emitted until after the source checksum passes.
+fn serialize_library_for_verification(
+    library: &LibraryState,
+    original: &serde_json::Value,
+) -> Result<Vec<u8>, StorageError> {
+    let original_media_types = original
+        .get("mediaTypes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| StorageError::Validation("Archive media types are invalid".into()))?;
+    if original_media_types.len() != library.media_types.len() {
+        return Err(StorageError::Validation(
+            "Archive media types are invalid".into(),
+        ));
+    }
+    if original_media_types
+        .iter()
+        .all(|media_type| media_type.get("iconKey").is_some())
+    {
+        return Ok(serde_json::to_vec_pretty(library)?);
+    }
+    let projected = LibraryForVerification {
+        revision: library.revision,
+        entries: &library.entries,
+        media_types: library
+            .media_types
+            .iter()
+            .zip(original_media_types)
+            .map(|(media_type, original)| MediaTypeForVerification {
+                id: &media_type.id,
+                name: &media_type.name,
+                sort_order: media_type.sort_order,
+                icon_key: original
+                    .get("iconKey")
+                    .map(|_| media_type.icon_key.as_str()),
+                criterion_ids: &media_type.criterion_ids,
+                archived_at: &media_type.archived_at,
+                version: media_type.version,
+                created_at: &media_type.created_at,
+                updated_at: &media_type.updated_at,
+            })
+            .collect(),
+        criteria: &library.criteria,
+        tags: &library.tags,
+    };
+    Ok(serde_json::to_vec_pretty(&projected)?)
+}
+
 fn json_preserves_input(original: &serde_json::Value, decoded: &serde_json::Value) -> bool {
     match (original, decoded) {
         (serde_json::Value::Object(original), serde_json::Value::Object(decoded)) => {
@@ -1584,6 +1677,61 @@ fn archive_import_orders(
     Ok(orders)
 }
 
+/// Upgrade an already-validated archive through each published portable
+/// format step. Source checksums and version-specific validation always run
+/// before this function, so these conversions cannot conceal damaged input.
+fn migrate_portable_archive_to_current(
+    archive: &mut PortableArchive,
+) -> Result<HashMap<String, i64>, StorageError> {
+    let source_version = archive.manifest.format_version;
+    let import_orders = archive_import_orders(&archive.library, &archive.history, source_version)?;
+    // Retired transient fields have appeared in several portable envelope
+    // versions and live workspace rows. Normalize the typed state in one
+    // shared place, independently from versioned portable-format upgrades.
+    normalize_home_state(&mut archive.home);
+    let mut version = source_version;
+    while version < FORMAT_VERSION {
+        match version {
+            LEGACY_FORMAT_VERSION => migrate_archive_v1_to_v2(archive),
+            RANKING_FORMAT_VERSION => migrate_archive_v2_to_v3(archive, &import_orders)?,
+            SOURCE_ORDER_FORMAT_VERSION => migrate_archive_v3_to_v4(archive),
+            _ => return Err(StorageError::UnsupportedVersion),
+        }
+        version += 1;
+    }
+    Ok(import_orders)
+}
+
+/// v1 has no ranking snapshot; rated entries are used to seed the current
+/// ranking state by the ranking import path. Typed home cleanup is shared
+/// across all envelope versions and runs before this sequence.
+fn migrate_archive_v1_to_v2(_archive: &mut PortableArchive) {}
+
+/// v3 made Library source order explicit. Earlier formats retain their exact
+/// vector order, so assign stable keys from that sequence, including trash.
+fn migrate_archive_v2_to_v3(
+    archive: &mut PortableArchive,
+    import_orders: &HashMap<String, i64>,
+) -> Result<(), StorageError> {
+    for entry in &mut archive.library.entries {
+        entry.import_order = Some(*import_orders.get(&entry.id).ok_or_else(|| {
+            StorageError::Validation("Archive is missing source ordering".into())
+        })?);
+    }
+    for item in &mut archive.history.trashed_entries {
+        item.entry.import_order = Some(*import_orders.get(&item.entry.id).ok_or_else(|| {
+            StorageError::Validation("Archive is missing source ordering".into())
+        })?);
+    }
+    Ok(())
+}
+
+/// v4 added saved provider credentials. Older archives intentionally migrate
+/// to an empty set, which replaces any credentials in the destination.
+fn migrate_archive_v3_to_v4(archive: &mut PortableArchive) {
+    archive.provider_credentials.clear();
+}
+
 fn replace_state_in_transaction(
     tx: &Transaction<'_>,
     home: &HomeState,
@@ -1767,6 +1915,29 @@ mod tests {
             std::process::id(),
             now_nanos()
         ))
+    }
+
+    #[test]
+    fn current_library_checksum_projection_uses_the_complete_typed_schema() {
+        let root = test_root("current-library-checksum-schema");
+        let storage = Storage::open(&root).unwrap();
+        let library = storage.load_library().unwrap();
+        let original = serde_json::to_value(&library).unwrap();
+        assert!(!library.media_types.is_empty());
+        assert!(library
+            .media_types
+            .iter()
+            .all(|media_type| original["mediaTypes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|source| source["id"] == media_type.id && source.get("iconKey").is_some())));
+        assert_eq!(
+            serialize_library_for_verification(&library, &original).unwrap(),
+            serde_json::to_vec_pretty(&library).unwrap()
+        );
+        drop(storage);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2287,10 +2458,44 @@ mod tests {
                 [],
             )
             .unwrap();
+        let home = source.load_home().unwrap();
+        let mut workspace = home.workspace;
+        workspace.tabs[0].library_view = Some(tastellar_domain::LibraryViewSnapshot {
+            active_group_id: "all".into(),
+            selected_entry_id: None,
+            list_mode: "covers".into(),
+            search_text: String::new(),
+            include_review_search: false,
+            include_tag_search: false,
+            within_current_filters: false,
+            filters: tastellar_domain::LibraryViewFilters {
+                media_types: Vec::new(),
+                tags: Vec::new(),
+                tag_mode: "any".into(),
+                min_year: String::new(),
+                max_year: String::new(),
+                cover: "any".into(),
+                criteria_complete: false,
+                legacy_min_score: None,
+                legacy_max_score: None,
+            },
+            table_columns: Vec::new(),
+            table_sort: "title".into(),
+            panel_mode: "details".into(),
+            scroll_top: 0.0,
+        });
+        source.save_workspace(home.version, workspace).unwrap();
         source.export_library_archive(&archive_path).unwrap();
 
         let mut legacy: PortableArchive =
             serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
+        let legacy_filters = &mut legacy.home.workspace.tabs[0]
+            .library_view
+            .as_mut()
+            .unwrap()
+            .filters;
+        legacy_filters.legacy_min_score = Some("7".into());
+        legacy_filters.legacy_max_score = Some("9".into());
         remove_v4_provider_section_for_legacy_archive(&mut legacy);
         legacy.history.ranking = None;
         legacy.manifest.format_version = LEGACY_FORMAT_VERSION;
@@ -2320,6 +2525,22 @@ mod tests {
             descriptor.byte_size = bytes.len() as u64;
         }
         let mut legacy_value = serde_json::to_value(&legacy).unwrap();
+        for media_type in legacy_value["library"]["mediaTypes"]
+            .as_array_mut()
+            .unwrap()
+        {
+            media_type.as_object_mut().unwrap().remove("iconKey");
+        }
+        let library_bytes =
+            serialize_library_for_verification(&legacy.library, &legacy_value["library"]).unwrap();
+        let library_descriptor = legacy_value["manifest"]["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|file| file["path"] == LIBRARY_PATH)
+            .unwrap();
+        library_descriptor["sha256"] = hex_hash(&library_bytes).into();
+        library_descriptor["byteSize"] = library_bytes.len().into();
         let legacy_home = legacy_value["home"].as_object_mut().unwrap();
         let legacy_preferences = legacy_home["preferences"].as_object_mut().unwrap();
         legacy_preferences.remove("scenesEnabled");
@@ -2353,6 +2574,13 @@ mod tests {
         let restored_home = target.load_home().unwrap();
         assert!(restored_home.preferences.scenes_enabled);
         assert!(restored_home.preferences.remember_sidebars_per_tab);
+        let restored_filters = &restored_home.workspace.tabs[0]
+            .library_view
+            .as_ref()
+            .unwrap()
+            .filters;
+        assert_eq!(restored_filters.legacy_min_score, None);
+        assert_eq!(restored_filters.legacy_max_score, None);
         assert!(restored_home
             .workspace
             .tabs
@@ -2811,6 +3039,204 @@ mod tests {
             .unwrap();
         assert_eq!(trashed, 1);
         assert!(event_count > 0);
+
+        drop(source);
+        drop(target);
+        fs::remove_dir_all(source_root).unwrap();
+        fs::remove_dir_all(target_root).unwrap();
+    }
+
+    #[test]
+    fn legacy_normal_session_with_unplaced_participants_is_ended_without_losing_answers() {
+        let source_root = test_root("stale-normal-source");
+        let target_root = test_root("stale-normal-target");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        let archive_path = source_root.join("stale-normal.tastellar.json");
+        let mut source = Storage::open(&source_root).unwrap();
+        save_scored_entries(
+            &mut source,
+            &[
+                ("participant-a", "Participant A", 10),
+                ("participant-b", "Participant B", 10),
+                ("participant-c", "Participant C", 10),
+                ("participant-d", "Participant D", 10),
+            ],
+        );
+        for entry_id in [
+            "participant-a",
+            "participant-b",
+            "participant-c",
+            "participant-d",
+        ] {
+            let revision = source.load_library().unwrap().revision;
+            source
+                .move_ranking_entry(
+                    revision,
+                    entry_id,
+                    10,
+                    true,
+                    RankingPosition {
+                        kind: "end".into(),
+                        anchor_id: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let prior = source
+            .start_duel_session(
+                source.load_library().unwrap().revision,
+                10,
+                Vec::new(),
+                None,
+                "normal".into(),
+            )
+            .unwrap();
+        let prior_prompt = source.next_duel(&prior.id, false).unwrap().unwrap();
+        source
+            .answer_duel(
+                source.load_library().unwrap().revision,
+                &prior.id,
+                &prior_prompt.duel_id,
+                DuelAnswer::Skip,
+            )
+            .unwrap();
+        source.end_duel_session(&prior.id).unwrap();
+        let active = source
+            .start_duel_session(
+                source.load_library().unwrap().revision,
+                10,
+                Vec::new(),
+                None,
+                "normal".into(),
+            )
+            .unwrap();
+        source.next_duel(&active.id, false).unwrap();
+        source.export_library_archive(&archive_path).unwrap();
+
+        let mut legacy: PortableArchive =
+            serde_json::from_slice(&fs::read(&archive_path).unwrap()).unwrap();
+        remove_v4_provider_section_for_legacy_archive(&mut legacy);
+        legacy.manifest.format_version = SOURCE_ORDER_FORMAT_VERSION;
+        legacy.readme = README_V3.into();
+        legacy.home.workspace.tabs[0].library_view = Some(LibraryViewSnapshot {
+            active_group_id: "all".into(),
+            selected_entry_id: None,
+            list_mode: "covers".into(),
+            search_text: String::new(),
+            include_review_search: false,
+            include_tag_search: false,
+            within_current_filters: false,
+            filters: tastellar_domain::LibraryViewFilters {
+                media_types: Vec::new(),
+                tags: Vec::new(),
+                tag_mode: "any".into(),
+                min_year: String::new(),
+                max_year: String::new(),
+                cover: "any".into(),
+                criteria_complete: false,
+                legacy_min_score: Some("7".into()),
+                legacy_max_score: Some("9".into()),
+            },
+            table_columns: Vec::new(),
+            table_sort: "title".into(),
+            panel_mode: "details".into(),
+            scroll_top: 0.0,
+        });
+        let legacy_active = legacy
+            .history
+            .ranking
+            .as_mut()
+            .unwrap()
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == active.id)
+            .unwrap();
+        let mut legacy_snapshot: Vec<String> =
+            serde_json::from_str(&legacy_active.snapshot_order_json).unwrap();
+        legacy_snapshot.pop();
+        legacy_active.snapshot_order_json = serde_json::to_string(&legacy_snapshot).unwrap();
+        let legacy_home_value = serde_json::to_value(&legacy.home).unwrap();
+        let home_bytes = serialize_home_for_verification(&legacy.home, &legacy_home_value).unwrap();
+        refresh_virtual_file(&mut legacy, HOME_PATH, &home_bytes);
+        let history_bytes = serde_json::to_vec_pretty(&legacy.history).unwrap();
+        refresh_virtual_file(&mut legacy, HISTORY_PATH, &history_bytes);
+        refresh_virtual_file(&mut legacy, README_PATH, README_V3.as_bytes());
+        fs::write(&archive_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        let original_judgment_count = legacy.history.ranking.as_ref().unwrap().judgments.len();
+
+        let mut target = Storage::open(&target_root).unwrap();
+        let target_revision = target.load_home().unwrap().version;
+        target
+            .import_library_archive(&archive_path, target_revision)
+            .unwrap();
+        let migrated = target.export_ranking_archive().unwrap();
+        let saved_active = migrated
+            .sessions
+            .iter()
+            .find(|session| session.id == active.id)
+            .unwrap();
+        assert_eq!(saved_active.status, "ended");
+        assert_eq!(migrated.judgments.len(), original_judgment_count);
+        assert_eq!(target.load_library().unwrap().entries.len(), 4);
+        let tier = target
+            .load_ranking()
+            .unwrap()
+            .tiers
+            .into_iter()
+            .find(|tier| tier.score == 10)
+            .unwrap();
+        assert_eq!(tier.placed_ids.len(), 4);
+        assert!(tier.unplaced_ids.is_empty());
+        let imported_home = target.load_home().unwrap();
+        let imported_view = imported_home.workspace.tabs[0]
+            .library_view
+            .as_ref()
+            .unwrap();
+        assert_eq!(imported_view.filters.legacy_min_score, None);
+        assert_eq!(imported_view.filters.legacy_max_score, None);
+
+        // The same stale participant snapshot in the current envelope is
+        // corrupt, not a historical mismatch to repair.
+        let current_archive_path = source_root.join("invalid-current-session.tastellar.json");
+        source
+            .export_library_archive(&current_archive_path)
+            .unwrap();
+        let mut current: PortableArchive =
+            serde_json::from_slice(&fs::read(&current_archive_path).unwrap()).unwrap();
+        let current_active = current
+            .history
+            .ranking
+            .as_mut()
+            .unwrap()
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == active.id)
+            .unwrap();
+        let mut current_snapshot: Vec<String> =
+            serde_json::from_str(&current_active.snapshot_order_json).unwrap();
+        current_snapshot.pop();
+        current_active.snapshot_order_json = serde_json::to_string(&current_snapshot).unwrap();
+        let current_history = serde_json::to_vec_pretty(&current.history).unwrap();
+        refresh_virtual_file(&mut current, HISTORY_PATH, &current_history);
+        fs::write(
+            &current_archive_path,
+            serde_json::to_vec_pretty(&current).unwrap(),
+        )
+        .unwrap();
+        let before_home = target.load_home().unwrap();
+        let before_library = target.load_library().unwrap();
+        let before_ranking = target.export_ranking_archive().unwrap();
+        assert!(target
+            .import_library_archive(&current_archive_path, before_home.version)
+            .is_err());
+        assert_eq!(target.load_home().unwrap(), before_home);
+        assert_eq!(target.load_library().unwrap(), before_library);
+        assert_eq!(
+            serde_json::to_value(target.export_ranking_archive().unwrap()).unwrap(),
+            serde_json::to_value(before_ranking).unwrap()
+        );
 
         drop(source);
         drop(target);
