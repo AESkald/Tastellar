@@ -21,6 +21,13 @@ export interface RecommendationEntryEvidence {
   reviewText?: string;
 }
 
+/** Persisted order within a score, with unplaced entries after placed entries. */
+export interface RecommendationTierOrder {
+  score: number;
+  placedIds: readonly string[];
+  unplacedIds: readonly string[];
+}
+
 export interface RecommendationPromptOptions {
   includeProfile?: boolean;
   includeReviews?: boolean;
@@ -50,6 +57,8 @@ export interface BuildRecommendationPromptArgs {
   tasteInputs: Readonly<Record<string, number>>;
   criterionLabels: Readonly<Record<string, string>>;
   entries?: readonly RecommendationEntryEvidence[];
+  /** Canonical Ranking order. Omitted IDs use the deterministic fallback below. */
+  rankingTiers?: readonly RecommendationTierOrder[] | null;
   /** False while the app has not successfully loaded the current library. */
   libraryLoaded?: boolean;
   options?: RecommendationPromptOptions;
@@ -187,8 +196,9 @@ function lineForEntry(
   };
 }
 
-function roundRobinRatedEntries(
+function orderRatedEntries(
   entries: readonly RecommendationEntryEvidence[],
+  rankingTiers: readonly RecommendationTierOrder[] | null | undefined,
 ): RecommendationEntryEvidence[] {
   const groups = new Map<number, RecommendationEntryEvidence[]>();
   for (const entry of entries) {
@@ -202,10 +212,30 @@ function roundRobinRatedEntries(
     group.push(entry);
     groups.set(entry.overallRating, group);
   }
-  const orderedGroups = [...groups.entries()]
+
+  const persistedRanks = new Map<number, Map<string, number>>();
+  for (const tier of rankingTiers ?? []) {
+    if (!validScore(tier.score)) continue;
+    const ranks = persistedRanks.get(tier.score) ?? new Map<string, number>();
+    for (const id of [...tier.placedIds, ...tier.unplacedIds]) {
+      if (!ranks.has(id)) ranks.set(id, ranks.size);
+    }
+    persistedRanks.set(tier.score, ranks);
+  }
+
+  return [...groups.entries()]
     .sort(([a], [b]) => b - a)
-    .map(([, group]) =>
-      group.sort((a, b) => {
+    .flatMap(([score, group]) => {
+      const ranks = persistedRanks.get(score);
+      return group.sort((a, b) => {
+        const aPersistedRank = ranks?.get(a.id);
+        const bPersistedRank = ranks?.get(b.id);
+        if (aPersistedRank !== undefined || bPersistedRank !== undefined) {
+          if (aPersistedRank === undefined) return 1;
+          if (bPersistedRank === undefined) return -1;
+          if (aPersistedRank !== bPersistedRank)
+            return aPersistedRank - bPersistedRank;
+        }
         const aRank =
           Number.isInteger(a.withinScoreRank) && (a.withinScoreRank ?? 0) > 0
             ? a.withinScoreRank!
@@ -219,18 +249,8 @@ function roundRobinRatedEntries(
           compareText(a.title, b.title) ||
           compareText(a.id, b.id)
         );
-      }),
-    );
-  const result: RecommendationEntryEvidence[] = [];
-  for (
-    let index = 0;
-    orderedGroups.some((group) => index < group.length);
-    index += 1
-  ) {
-    for (const group of orderedGroups)
-      if (index < group.length) result.push(group[index]);
-  }
-  return result;
+      });
+    });
 }
 
 const EMPTY_COUNTS = (): PromptCategoryCounts => ({
@@ -309,7 +329,7 @@ export function buildRecommendationPrompt(
       }),
     );
 
-  const rated = roundRobinRatedEntries(entries);
+  const rated = orderRatedEntries(entries, args.rankingTiers);
   const known = entries.filter(
     (e) =>
       e.disposition === "known" ||

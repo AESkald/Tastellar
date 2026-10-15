@@ -464,6 +464,9 @@ export function Library({
   }, [activeGroupId, filters, state]);
   const selectedGroup =
     groups.find((group) => group.id === activeGroupId) ?? groups[0];
+  const selectedGroupHeading = selectedGroup?.score == null
+    ? selectedGroup?.label ?? t("library.ui.library")
+    : t("library.ui.scoreGroupHeading", { score: selectedGroup.score });
   const searchResults = useMemo(() => {
     if (!settledSearch) return [];
     const needle = settledSearch.toLocaleLowerCase("en");
@@ -902,10 +905,12 @@ export function Library({
         <div className="library-heading-row">
           <div className="library-heading-copy">
             <span className="eyebrow">{t("library.ui.yourStories")}</span>
-            <h1>
+            <h1 aria-label={!settledSearch && selectedGroup?.score != null ? selectedGroup.label : undefined}>
               {settledSearch
                 ? t("library.ui.searchResultHeading", { query: settledSearch })
-                : (selectedGroup?.label ?? t("library.ui.library"))}
+                : selectedGroup?.score != null
+                  ? <><span>{selectedGroup.score}</span><small aria-hidden="true"> / 10</small></>
+                  : selectedGroupHeading}
             </h1>
             <p>
               {settledSearch
@@ -1074,7 +1079,7 @@ export function Library({
             >
               <ChevronRight size={16} />
             </button>
-            <span>{selectedGroup?.label ?? t("library.ui.library")}</span>
+            <span>{selectedGroupHeading}</span>
             {hasActiveFilters && (
               <small>
                 {selectedGroup?.matching ?? 0} of {selectedGroup?.full ?? 0}

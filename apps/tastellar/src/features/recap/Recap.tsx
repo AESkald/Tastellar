@@ -9,6 +9,7 @@ import {
 import {
   ArrowLeft,
   ArrowLeftRight,
+  ArrowUpRight,
   Download,
   Image as ImageIcon,
   Layers3,
@@ -2262,6 +2263,10 @@ export function Recap({
               )}
             </span>
           )}
+          <span className="recap-feed-action">
+            <span>{t("recap.gallery.customize")}</span>
+            <ArrowUpRight size={14} aria-hidden="true" />
+          </span>
         </button>
       </section>
     );

@@ -46,29 +46,45 @@ describe("buildRecommendationPrompt", () => {
     expect(result.text).not.toContain("Untitled");
   });
 
-  it("keeps ranked evidence round-robin across descending score groups and includes reviews by default", () => {
+  it("orders every rated work by descending score and persisted tier order across media types", () => {
     const entries = [
-      entry("8-rank-2", 8, 2, {
-        reviewText: "Review",
-      }),
-      entry("10-rank-2", 10, 2),
-      entry("10-rank-1", 10, 1),
-      entry("8-rank-1", 8, 1),
+      entry("meters", 7, 1, { title: "100 Meters", mediaType: "Film" }),
+      entry("aot", 10, 1, { title: "Attack on Titan", mediaType: "Anime" }),
+      entry("players", 8, 1, { title: "1000 Players", mediaType: "Game" }),
+      entry("arcane", 9, 1, { title: "Arcane", mediaType: "Series" }),
+      entry("book", 10, 4, { title: "The Left Hand of Darkness", mediaType: "Literature" }),
+      entry("manga", 10, 2, { title: "Witch Hat Atelier", mediaType: "Manga" }),
+      entry("game", 10, 3, { title: "Outer Wilds", mediaType: "Game" }),
     ];
-    const result = buildRecommendationPrompt({ ...base, entries });
-    const prompt = result.text;
+    const result = buildRecommendationPrompt({
+      ...base,
+      entries,
+      rankingTiers: [
+        { score: 10, placedIds: ["game", "manga", "aot"], unplacedIds: ["book"] },
+        { score: 9, placedIds: ["arcane"], unplacedIds: [] },
+        { score: 8, placedIds: ["players"], unplacedIds: [] },
+        { score: 7, placedIds: ["meters"], unplacedIds: [] },
+      ],
+      options: { includeMediaType: true },
+    });
+    const evidence = result.text
+      .split(t("home.promptRankedEvidenceHeading"))[1]
+      .split(t("home.promptExclusionsHeading"))[0];
+    const evidenceLines = evidence
+      .split("\n")
+      .filter((line) => line.startsWith("- "));
 
-    expect(prompt.indexOf("10-rank-1")).toBeLessThan(
-      prompt.indexOf("8-rank-1"),
-    );
-    expect(prompt.indexOf("8-rank-1")).toBeLessThan(
-      prompt.indexOf("10-rank-2"),
-    );
-    expect(prompt.indexOf("10-rank-2")).toBeLessThan(
-      prompt.indexOf("8-rank-2"),
-    );
-    expect(prompt).toContain("Personal review: Review");
-    expect(result.included).toMatchObject({ entries: 4, reviews: 1 });
+    expect(evidenceLines).toEqual([
+      t("home.promptEntryRatedWithType", { title: "Outer Wilds", rating: 10, type: "Game" }),
+      t("home.promptEntryRatedWithType", { title: "Witch Hat Atelier", rating: 10, type: "Manga" }),
+      t("home.promptEntryRatedWithType", { title: "Attack on Titan", rating: 10, type: "Anime" }),
+      t("home.promptEntryRatedWithType", { title: "The Left Hand of Darkness", rating: 10, type: "Literature" }),
+      t("home.promptEntryRatedWithType", { title: "Arcane", rating: 9, type: "Series" }),
+      t("home.promptEntryRatedWithType", { title: "1000 Players", rating: 8, type: "Game" }),
+      t("home.promptEntryRatedWithType", { title: "100 Meters", rating: 7, type: "Film" }),
+    ]);
+    expect(result.included).toMatchObject({ entries: 7, reviews: 0 });
+    expect(result.omitted.entries).toBe(0);
   });
 
   it("includes each eligible entry title and rating and adds its type only when requested", () => {

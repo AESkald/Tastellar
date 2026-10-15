@@ -22,6 +22,7 @@ export function Modal({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const descriptionId = useId();
   const [discard, setDiscard] = useState(false);
   useEffect(() => {
     const dialog = ref.current;
@@ -34,6 +35,7 @@ export function Modal({
       else onClose();
     }
   };
+  const activeDescription = discard ? t("common.discardBody") : description;
   return (
     <dialog
       data-dirty={dirty}
@@ -55,6 +57,8 @@ export function Modal({
           requestClose();
         }
       }}
+      aria-busy={busy || undefined}
+      aria-describedby={activeDescription ? descriptionId : undefined}
       aria-labelledby={titleId}
     >
       <div className="modal-inner">
@@ -63,7 +67,7 @@ export function Modal({
             <h2 id={titleId}>
               {discard ? t("common.discardTitle") : title}
             </h2>
-            <p>{discard ? t("common.discardBody") : description}</p>
+            {activeDescription && <p id={descriptionId}>{activeDescription}</p>}
           </div>
           <button
             type="button"

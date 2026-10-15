@@ -18,6 +18,7 @@
   "recap.gallery.saved": "Saved Recaps",
   "recap.gallery.deleteAll": "Delete all Recaps",
   "recap.gallery.openTemplate": "Open the {title} Recap editor",
+  "recap.gallery.customize": "Customize layout",
   "recap.gallery.retry": "Click to retry",
   "recap.gallery.savedDate": "Edited {date}",
   "recap.gallery.deleteDraft": "Delete saved {title}",

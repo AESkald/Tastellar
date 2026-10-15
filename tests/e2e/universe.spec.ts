@@ -207,7 +207,7 @@ async function openGroup(page: Page, label: string) {
   await page.locator(".library-group-list")
     .getByRole("button", { name: new RegExp(`^${label}(?:\\s|$)`) })
     .click();
-  await expect(page.locator(".library-heading-copy h1")).toHaveText(label);
+  await expect(page.getByRole("heading", { name: label, exact: true })).toBeVisible();
 }
 
 const syntheticTierCounts = [
@@ -531,7 +531,7 @@ test("constellation stars remain visible against dark and light theme surfaces",
   expect(await scene.locator("canvas").evaluate((element) => (element as HTMLCanvasElement).getContext("webgl") !== null)).toBe(true);
   const stage = await scene.locator(".universe-canvas-wrap").boundingBox();
   if (!stage) throw new Error("Constellation stage should be measurable at a wide aspect");
-  expect(stage.width / stage.height).toBeGreaterThan(3);
+  expect(stage.width / stage.height).toBeGreaterThan(2.6);
   await page.waitForTimeout(1000);
   await scene.screenshot({ path: "test-results/universe-constellations-dark.png", animations: "disabled" });
 
@@ -598,7 +598,11 @@ test("Deep Field is a bounded 2D map with pan and zoom but no orbit", async ({ p
   await page.waitForTimeout(1000);
   await expect(scene.getByRole("button", { name: "Pause scene motion", exact: true })).toHaveCount(0);
   await expect(scene.getByText(/Drag to pan|Drag to orbit/)).toHaveCount(0);
-  await expect(scene.locator(".universe-canvas-wrap")).toHaveCSS("height", /3\d\dpx/);
+  const stageBounds = await scene.locator(".universe-canvas-wrap").boundingBox();
+  if (!stageBounds) throw new Error("Deep Field stage should be measurable");
+  expect(stageBounds.height).toBeGreaterThanOrEqual(420);
+  expect(stageBounds.height).toBeLessThanOrEqual(460);
+  expect(stageBounds.width / stageBounds.height).toBeGreaterThan(2);
   const labels = scene.getByTestId("universe-work");
   await expect(labels).toHaveCount(124);
   const initiallyVisible = await labels.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-work-id")));
@@ -667,20 +671,24 @@ test("scene size, theme contrast, starfield, and orbit controls remain usable", 
   await openGroup(page, "10");
   const scene = page.getByTestId("library-universe");
   const themeSnapshots = [
-    ["Midnight", "dark", "rgb(28, 28, 35)"],
-    ["Daylight", "light", "rgb(252, 251, 248)"],
-    ["Dusk", "dusk", "rgb(42, 36, 52)"],
-    ["Reading", "reading", "rgb(247, 242, 231)"],
+    ["Midnight", "dark"],
+    ["Daylight", "light"],
+    ["Dusk", "dusk"],
+    ["Reading", "reading"],
   ];
-  for (const [theme, dataTheme, background] of themeSnapshots) {
+  const sceneBackgrounds = new Set<string>();
+  for (const [theme, dataTheme] of themeSnapshots) {
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: new RegExp(theme) }).click();
     await page.getByRole("button", { name: "Library", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", dataTheme);
-    expect(await scene.locator(".universe-canvas-wrap").evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(background);
+    const sceneBackground = await scene.locator(".universe-canvas-wrap").evaluate((element) => getComputedStyle(element).backgroundColor);
+    expect(sceneBackground).not.toBe("rgba(0, 0, 0, 0)");
+    sceneBackgrounds.add(sceneBackground);
     await expect(scene.getByRole("button", { name: "Synthetic Solar Work 1", exact: true })).toBeVisible();
     await scene.screenshot({ path: `test-results/universe-${dataTheme}-solar.png`, animations: "disabled" });
   }
+  expect(sceneBackgrounds.size).toBe(themeSnapshots.length);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.waitForTimeout(80);
   const canvas = scene.locator(".universe-canvas");

@@ -153,6 +153,7 @@ export function Settings({
             <button
               key={id}
               className={page === id ? "active" : ""}
+              aria-current={page === id ? "page" : undefined}
               onClick={() => setPage(id)}
             >
               <Icon size={17} />
@@ -192,7 +193,8 @@ export function Settings({
                           <span />
                           <span />
                         </div>
-                        {preferences.theme === id && (
+                        {(preferences.theme === id ||
+                          (id === "reading" && preferences.theme === "forest")) && (
                           <span className="theme-check">
                             <Check size={12} />
                           </span>
@@ -460,18 +462,11 @@ export function Settings({
                   {t("settings.providerCreditsTitle")}
                 </h3>
                 <ul className="provider-credit-list">
-                  <li className="provider-credit-tmdb">
-                    <ExternalLink
-                      className="tmdb-logo-link"
-                      href="https://www.themoviedb.org"
-                      aria-label={t("settings.tmdbLogoAlt")}
-                    >
-                      <img
-                        src="/tmdb-logo.svg"
-                        alt={t("settings.tmdbLogoAlt")}
-                      />
+                  <li>
+                    <span>{t("settings.tmdbCredit")}</span>
+                    <ExternalLink href="https://www.themoviedb.org">
+                      TMDB <ArrowUpRight size={13} aria-hidden="true" />
                     </ExternalLink>
-                    <p>{t("settings.tmdbAttribution")}</p>
                   </li>
                   <li>
                     <span>{t("settings.openLibraryCredit")}</span>
@@ -499,6 +494,9 @@ export function Settings({
                     </ExternalLink>
                   </li>
                 </ul>
+                <p className="provider-credit-disclaimer">
+                  {t("settings.tmdbAttribution")}
+                </p>
               </section>
               <div className="settings-support-card">
                 <Heart size={18} aria-hidden="true" />

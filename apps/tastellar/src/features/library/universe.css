@@ -3,21 +3,22 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  margin: 0 0 18px;
+  margin: 0 0 17px;
   overflow: hidden;
   border: 1px solid var(--border-soft);
-  border-radius: 14px;
-  background: var(--rail);
+  border-radius: 15px;
+  border-color: color-mix(in srgb, var(--border-soft) 78%, transparent);
+  background: color-mix(in srgb, var(--surface) 74%, var(--rail));
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 3%, transparent);
 }
 .universe-header {
   z-index: 2;
   display: flex;
-  min-height: 62px;
+  min-height: 57px;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 10px 15px 9px 18px;
+  padding: 9px 15px 8px 18px;
   border-bottom: 1px solid color-mix(in srgb, var(--border-soft) 78%, transparent);
   background: color-mix(in srgb, var(--rail) 94%, var(--surface));
 }
@@ -30,11 +31,11 @@
 }
 .universe-eyebrow {
   display: block;
-  margin-bottom: 2px;
+  margin-bottom: 0;
   color: var(--accent);
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 550;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   line-height: 1.35;
 }
 .universe-title-row {
@@ -46,8 +47,8 @@
 .universe-title-row h2 {
   overflow: hidden;
   color: var(--text);
-  font-size: 1.28rem;
-  font-weight: 430;
+  font-size: 1.32rem;
+  font-weight: 520;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -55,30 +56,30 @@
 .universe-scope {
   flex: 0 0 auto;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.78rem;
   font-weight: 450;
   letter-spacing: 0.015em;
 }
 .universe-count {
   flex: 0 0 auto;
   color: var(--dim);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
 }
 .universe-controls {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 .universe-tool {
   display: grid;
-  width: 29px;
-  height: 29px;
+  width: 34px;
+  height: 34px;
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 9px;
   color: var(--muted);
   transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
 }
@@ -102,32 +103,32 @@
   opacity: 0.52;
 }
 .universe-quality select {
-  height: 28px;
-  max-width: 94px;
-  padding: 0 19px 0 7px;
+  height: 34px;
+  max-width: 110px;
+  padding: 0 22px 0 9px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 9px;
   color: var(--muted);
   background: var(--input);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   cursor: pointer;
 }
 .universe-canvas-wrap {
   position: relative;
-  min-height: 320px;
-  height: clamp(320px, 42vh, 380px);
+  min-height: 420px;
+  height: clamp(420px, 42vh, 460px);
   overflow: hidden;
-  border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 5%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  background: color-mix(in srgb, var(--bg) 24%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 2%, transparent);
   isolation: isolate;
 }
 .universe-canvas-wrap::after {
   position: absolute;
   z-index: 1;
   inset: 1px;
-  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 24%, transparent);
   pointer-events: none;
   content: "";
 }
@@ -217,10 +218,10 @@
   top: 50%;
   left: 50%;
   width: min(340px, calc(100% - 38px));
-  padding: 17px 20px 15px;
+  padding: 20px 22px 18px;
   transform: translate(-50%, -50%);
   border: 1px solid color-mix(in srgb, var(--border) 88%, transparent);
-  border-radius: 10px;
+  border-radius: 13px;
   background: color-mix(in srgb, var(--bg) 76%, transparent);
   text-align: center;
   backdrop-filter: blur(9px);
@@ -228,59 +229,59 @@
 .universe-empty-state > span {
   display: block;
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.92rem;
   font-weight: 500;
 }
 .universe-empty-state p {
   margin: 5px 0 11px;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.82rem;
   line-height: 1.5;
 }
 .universe-empty-state button,
 .universe-render-status button {
-  min-height: 27px;
-  padding: 0 10px;
+  min-height: 34px;
+  padding: 0 12px;
   border: 1px solid var(--accent-border);
-  border-radius: 6px;
+  border-radius: 9px;
   color: var(--accent);
   background: var(--accent-bg);
-  font-size: 0.65rem;
+  font-size: 0.78rem;
 }
 .universe-render-status {
   position: absolute;
   z-index: 5;
-  bottom: 10px;
-  left: 12px;
+  bottom: 12px;
+  left: 14px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 7px;
+  padding: 6px 9px;
   border: 1px solid var(--border-soft);
-  border-radius: 5px;
+  border-radius: 8px;
   color: var(--muted);
   background: color-mix(in srgb, var(--bg) 82%, transparent);
-  font-size: 0.59rem;
+  font-size: 0.74rem;
 }
 .universe-render-status button {
-  min-height: 22px;
-  padding: 0 7px;
-  font-size: 0.58rem;
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 0.72rem;
 }
 .universe-footer {
   display: flex;
-  min-height: 37px;
+  min-height: 39px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 4px 13px 5px 17px;
+  padding: 4px 17px 5px;
   border-top: 1px solid color-mix(in srgb, var(--border-soft) 70%, transparent);
   background: color-mix(in srgb, var(--rail) 94%, var(--surface));
 }
 .universe-hint {
   flex: 0 0 auto;
   color: var(--dim);
-  font-size: 0.7rem;
+  font-size: 0.76rem;
 }
 .universe-scales {
   display: flex;
@@ -295,14 +296,14 @@
 }
 .universe-scales button {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 28px;
   flex: 0 0 auto;
   align-items: center;
   gap: 5px;
-  padding: 0 6px;
-  border-radius: 4px;
+  padding: 0 8px;
+  border-radius: 7px;
   color: var(--dim);
-  font-size: 0.68rem;
+  font-size: 0.76rem;
 }
 .universe-scales button:hover,
 .universe-scales button[aria-current="page"] {
@@ -310,20 +311,20 @@
   background: var(--accent-bg);
 }
 .universe-scales button b {
-  font-size: 0.66rem;
+  font-size: 0.74rem;
   font-weight: 550;
   font-variant-numeric: tabular-nums;
 }
 .universe-collapsed-expand {
   display: flex;
   width: 100%;
-  min-height: 36px;
+  min-height: 39px;
   align-items: center;
   justify-content: center;
   gap: 6px;
   border-top: 1px solid var(--border-soft);
   color: var(--muted);
-  font-size: 0.65rem;
+  font-size: 0.78rem;
 }
 .universe-collapsed-expand:hover {
   color: var(--accent);
@@ -338,17 +339,17 @@
     padding-right: 9px;
   }
   .universe-controls {
-    gap: 1px;
+    gap: 3px;
   }
   .universe-tool {
-    width: 26px;
-    height: 27px;
+    width: 31px;
+    height: 31px;
   }
   .universe-quality select {
-    max-width: 78px;
+    max-width: 92px;
   }
   .universe-canvas-wrap {
-    height: clamp(240px, 62vw, 290px);
+    height: clamp(240px, 55vw, 290px);
     min-height: 240px;
   }
   .universe-footer {

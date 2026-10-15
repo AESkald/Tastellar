@@ -1440,9 +1440,9 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
       const isSkySprite = !("currentX" in node);
       const skyStar = isSkySprite && node.kind === "star";
       const skyGalaxy = isSkySprite && node.kind === "galaxy";
-      if (skyStar) color = lightMode ? "#050508" : "#f4f6ff";
+      if (skyStar) color = lightMode ? "#666158" : "#f4f6ff";
       let adjusted: [number, number, number] = skyStar
-        ? lightMode ? [0, 0, 0] : [0.96, 0.98, 1]
+        ? lightMode ? [0.40, 0.38, 0.345] : [0.96, 0.98, 1]
         : themedRgb(color);
       if (projection.group === "7" && "work" in node && node.work && node.kind === "galaxy") {
         adjusted = [Math.min(1, adjusted[0] * 1.55), Math.min(1, adjusted[1] * 1.55), Math.min(1, adjusted[2] * 1.55)];
@@ -1450,14 +1450,14 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
       const baseAlpha = ("opacity" in node ? node.opacity : node.alpha) * opacityScale;
       const alpha = opaqueHorizon && (node.kind === "blackHole" || node.kind === "sun")
         ? 1
-        : skyStar ? opacityScale : node.kind === "planet" ? Math.min(1, baseAlpha * 1.18) : baseAlpha;
+        : skyStar ? opacityScale * (lightMode ? 0.88 : 1) : node.kind === "planet" ? Math.min(1, baseAlpha * 1.18) : baseAlpha;
       const chosen: [number, number, number, number] = [adjusted[0], adjusted[1], adjusted[2], clamp(alpha, 0, 1)];
       const physicalScale = node.kind === "planet" ? 1.4 : 1;
       // Clip W is positive in front of the camera; using rotated Z here
       // reversed that sign and reduced visible background galaxies to specks.
       const skyDepth = transform(skyViewProjection, x, y, z)[3];
       const baseSize = skyStar
-        ? 2 * (lightMode ? 2.8 : 1.25) * Math.tan(Math.PI / 6) * Math.max(1, skyDepth) / height
+        ? 2 * 1.25 * Math.tan(Math.PI / 6) * Math.max(1, skyDepth) / height
         : !isSkySprite && "currentX" in node ? constellationWorldSize(node) : node.size;
       const size = ("id" in node && node.id === selectedId ? baseSize * 1.08 : baseSize) * physicalScale;
       const constellationWorkStar = !isSkySprite && projection.group === "9" && "id" in node && Boolean(node.id && node.work) && node.kind === "star";
@@ -1697,11 +1697,11 @@ export function createUniverseRenderer(canvas: HTMLCanvasElement, initialOptions
       const x = (nx * 0.5 + 0.5) * width;
       const y = (1 - (ny * 0.5 + 0.5)) * height;
       const radius = sprite.kind === "star"
-        ? (lightMode ? 1.4 : 0.625)
+        ? 0.625
         : Math.max(0.35, sprite.size * height / (2 * Math.tan(Math.PI / 6) * clipW));
-      context.globalAlpha = opacity * (sprite.kind === "star" ? 1 : sprite.alpha);
+      context.globalAlpha = opacity * (sprite.kind === "star" ? (lightMode ? 0.88 : 1) : sprite.alpha);
       context.fillStyle = sprite.kind === "star"
-        ? (lightMode ? "#000000" : "#f4f6ff")
+        ? (lightMode ? "#666158" : "#f4f6ff")
         : sceneRgba(sprite.color);
       if (sprite.kind === "galaxy" && sprite.planeU && sprite.planeV) {
         const projectOffset = (axis: [number, number, number]) => {

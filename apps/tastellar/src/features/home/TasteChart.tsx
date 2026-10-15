@@ -28,9 +28,9 @@ export function TasteChart({ axes }: { axes: TasteAxis[] }) {
       </div>
     );
   const n = axes.length,
-    cx = 210,
-    cy = 160,
-    r = 104;
+    cx = 250,
+    cy = 185,
+    r = 163;
   const point = (i: number, radius: number) => ({
     x: cx + Math.sin((i * Math.PI * 2) / n) * radius,
     y: cy - Math.cos((i * Math.PI * 2) / n) * radius,
@@ -52,7 +52,7 @@ export function TasteChart({ axes }: { axes: TasteAxis[] }) {
     <div className="taste-radar-wrap">
       <svg
         className="radar"
-        viewBox="0 0 420 330"
+        viewBox="0 0 500 370"
         role="img"
         aria-label={t("home.radarChartLabel")}
       >
@@ -74,12 +74,14 @@ export function TasteChart({ axes }: { axes: TasteAxis[] }) {
         })}
         <polygon points={shape} className="radar-shape" />
         {axes.map((axis, i) => {
-          const p = point(i, (r * (axis.value ?? 0)) / 10),
-            label = point(i, r + 27);
+          const p = point(i, (r * (axis.value ?? 0)) / 10);
+          const label = point(i, r + 16);
           const labelText =
             axis.criterionId === "audiovisual"
               ? t("home.criterion.audiovisualShort")
               : axis.label;
+          const compactLabel =
+            labelText.length > 6 ? `${labelText.slice(0, 4)}…` : labelText;
           return (
             <g key={axis.criterionId}>
               <circle cx={p.x} cy={p.y} r="4" className="radar-dot" />
@@ -87,6 +89,7 @@ export function TasteChart({ axes }: { axes: TasteAxis[] }) {
                 x={label.x}
                 y={label.y}
                 dy=".35em"
+                aria-label={labelText}
                 textAnchor={
                   Math.abs(label.x - cx) < 10
                     ? "middle"
@@ -95,7 +98,9 @@ export function TasteChart({ axes }: { axes: TasteAxis[] }) {
                       : "end"
                 }
               >
-                {labelText}
+                <title>{labelText}</title>
+                <tspan className="radar-label-full">{labelText}</tspan>
+                <tspan className="radar-label-compact">{compactLabel}</tspan>
               </text>
             </g>
           );

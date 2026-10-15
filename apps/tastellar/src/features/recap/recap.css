@@ -1,10 +1,10 @@
 .recap-page {
   --recap-line: color-mix(in srgb, var(--border) 78%, transparent);
   --recap-soft: color-mix(in srgb, var(--accent) 8%, var(--surface));
-  width: min(1280px, 100%);
+  width: min(1340px, 100%);
   min-height: 100%;
   margin: 0 auto;
-  padding: 30px clamp(17px, 3.2vw, 44px) 56px;
+  padding: 28px clamp(20px, 3vw, 38px) 48px;
   color: var(--text);
 }
 .recap-heading {
@@ -17,27 +17,31 @@
 }
 .recap-heading-copy { min-width: 0; }
 .recap-eyebrow { display: block; margin-bottom: 8px; color: var(--dim); font-size: .62rem; font-weight: 650; letter-spacing: .14em; }
-.recap-heading h1 { margin: 0; font-size: clamp(1.75rem, 3vw, 2.35rem); font-weight: 590; letter-spacing: -.047em; line-height: 1.06; }
-.recap-heading p { margin: 8px 0 0; color: var(--muted); font-size: .84rem; line-height: 1.45; }
-.recap-count { flex: 0 0 auto; color: var(--dim); font-size: .76rem; font-variant-numeric: tabular-nums; }
-.recap-gallery-feed { width: 100%; }
-.recap-feed-section { width: min(1120px, 100%); margin: 38px auto 0; }
-.recap-feed-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
-.recap-feed-title-group { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px 13px; }
-.recap-feed-title-group h2 { margin: 0; font-size: clamp(1.05rem, 1.7vw, 1.3rem); font-weight: 590; letter-spacing: -.025em; }
-.recap-feed-count { color: var(--dim); font-size: .76rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.recap-heading h1 { margin: 0; font-size: clamp(2rem, 2.4vw, 2.25rem); font-weight: 590; letter-spacing: -.047em; line-height: 1.06; }
+.recap-heading p { margin: 8px 0 0; color: var(--muted); font-size: .9rem; line-height: 1.45; }
+.recap-count { flex: 0 0 auto; color: var(--muted); font-size: .82rem; font-variant-numeric: tabular-nums; }
+.recap-gallery-feed { display: block; width: 100%; margin-top: 0; }
+.recap-feed-section { width: min(1220px, 100%); margin: 34px auto 0; }
+.recap-feed-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.recap-feed-title-group { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 9px; }
+.recap-feed-title-group h2 { margin: 0; font-size: 1.3rem; font-weight: 590; letter-spacing: -.025em; line-height: 1.25; }
+.recap-feed-count { color: var(--muted); font-size: .79rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .recap-feed-count-periods { white-space: normal; text-align: right; }
-.recap-feed-poster { display: flex; align-items: flex-start; justify-content: center; width: 100%; min-width: 0; padding: 0; overflow: hidden; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.recap-feed-poster:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
-.recap-feed-poster canvas { display: block; width: auto; height: auto; max-width: 100%; max-height: min(700px, calc(100dvh - 210px)); margin: 0; }
-.recap-feed-loading { min-height: 230px; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 24px; color: var(--muted); font-size: .78rem; }
+.recap-feed-poster { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; width: 100%; min-width: 0; padding: 0; overflow: visible; border: 0; border-radius: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.recap-feed-poster:focus-visible { outline: 3px solid var(--accent); outline-offset: 5px; }
+.recap-feed-poster canvas { display: block; width: auto; height: auto; max-width: 100%; max-height: max(240px, min(620px, calc(100dvh - 380px))); margin: 0; }
+.recap-feed-action { width: 100%; min-height: 28px; display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-top: 8px; padding: 0; color: var(--accent); font-size: .78rem; font-weight: 560; opacity: .82; }
+.recap-feed-action svg { flex: 0 0 auto; transition: transform .16s ease; }
+.recap-feed-poster:hover .recap-feed-action { opacity: 1; }
+.recap-feed-poster:hover .recap-feed-action svg { transform: translate(2px, -2px); }
+.recap-feed-loading { width: 100%; min-height: max(240px, min(620px, calc(100dvh - 380px))); display: flex; align-items: center; justify-content: center; gap: 9px; padding: 24px; color: var(--muted); font-size: .84rem; }
 .recap-feed-loading.is-error { color: var(--danger); }
 .recap-gallery-empty { min-height: 240px; width: min(670px, 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 28px auto 0; padding: 30px 24px; text-align: center; border: 1px solid var(--recap-line); border-radius: 18px; background: color-mix(in srgb, var(--surface) 70%, transparent); }
 .recap-empty-mark { display: grid; place-items: center; width: 55px; height: 55px; margin-bottom: 12px; border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border)); border-radius: 50%; color: var(--accent); background: var(--recap-soft); }
 .recap-gallery-empty h2 { margin: 0; font-size: 1.1rem; font-weight: 590; }
 .recap-gallery-empty p { max-width: 440px; margin: 7px 0 0; color: var(--muted); font-size: .82rem; line-height: 1.55; }
 .recap-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 17px; }
-.recap-saved-section { width: min(1120px, 100%); margin: 46px auto 0; padding-top: 18px; border-top: 1px solid var(--border-soft); }
+.recap-saved-section { width: 100%; margin: 28px auto 0; padding-top: 18px; border-top: 1px solid var(--border-soft); }
 .recap-saved-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .recap-saved-heading > div { display: flex; align-items: baseline; gap: 10px; }
 .recap-saved-heading h2 { margin: 0; font-size: .98rem; font-weight: 590; }
@@ -52,6 +56,7 @@
 .recap-state svg { color: var(--accent); }
 .recap-state h2 { margin: 5px 0 0; color: var(--text); font-size: 1.1rem; font-weight: 590; }
 .recap-state p { max-width: 400px; margin: 0; font-size: .82rem; line-height: 1.5; }
+.recap-page.recap-editor { width: min(1540px, 100%); padding-top: 16px; padding-bottom: 24px; }
 .recap-editor { padding-top: 15px; }
 .recap-editor-topbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 13px; }
 .recap-back-button { display: inline-flex; align-items: center; gap: 7px; padding: 5px 0; border: 0; background: transparent; color: var(--muted); font-size: .78rem; cursor: pointer; }
@@ -59,14 +64,14 @@
 .recap-editor-actions { display: flex; align-items: center; gap: 6px; }
 .recap-editor-actions .button { display: inline-flex; align-items: center; gap: 6px; }
 .recap-editor-actions .icon-button:disabled { opacity: .42; }
-.recap-editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; align-items: start; gap: 18px; }
+.recap-editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; align-items: start; gap: 20px; }
 .recap-preview-column { min-width: 0; }
 .recap-preview-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin: 0 2px 9px; }
-.recap-preview-heading h1 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .99rem; font-weight: 600; letter-spacing: -.02em; }
-.recap-preview-heading span { flex: 0 0 auto; color: var(--dim); font-size: .7rem; }
-.recap-stage { position: relative; display: grid; place-items: center; min-height: min(73vh, 780px); padding: clamp(17px, 3vw, 36px); overflow: hidden; border: 1px solid var(--recap-line); border-radius: 16px; background: radial-gradient(ellipse at 50% 44%, color-mix(in srgb, var(--surface) 89%, var(--accent) 3%), color-mix(in srgb, var(--bg) 92%, var(--surface))); }
+.recap-preview-heading h1 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 1.3rem; font-weight: 600; letter-spacing: -.02em; }
+.recap-preview-heading span { flex: 0 0 auto; color: var(--muted); font-size: .8rem; }
+.recap-stage { position: relative; display: grid; place-items: center; min-height: min(65vh, 660px); max-height: calc(100dvh - 170px); padding: clamp(17px, 3vw, 36px); overflow: hidden; border: 1px solid var(--recap-line); border-radius: 14px; background: color-mix(in srgb, var(--surface) 78%, var(--bg)); }
 .recap-stage-canvas-wrap { position: relative; display: grid; place-items: center; max-width: 100%; max-height: 100%; }
-.recap-stage-canvas { display: block; width: auto; height: auto; max-width: 100%; max-height: min(68vh, 700px); object-fit: contain; border-radius: 2px; box-shadow: 0 14px 45px #0005; touch-action: manipulation; }
+.recap-stage-canvas { display: block; width: auto; height: auto; max-width: 100%; max-height: min(58vh, 590px); object-fit: contain; border-radius: 2px; box-shadow: 0 12px 32px #0004; touch-action: manipulation; }
 .recap-slot-hit { position: absolute; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; color: transparent; cursor: pointer; }
 .recap-slot-hit:hover { border-color: color-mix(in srgb, var(--accent) 75%, white); background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .recap-slot-hit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -74,8 +79,8 @@
 .recap-slot-hit.empty { color: color-mix(in srgb, var(--accent) 75%, white); border: 1px dashed color-mix(in srgb, var(--accent) 54%, transparent); background: color-mix(in srgb, var(--surface) 28%, transparent); }
 .recap-slot-hit.empty:hover { border-style: solid; background: color-mix(in srgb, var(--accent) 25%, transparent); }
 .recap-slot-hit.empty svg { filter: drop-shadow(0 1px 2px #0008); }
-.recap-preview-caption { display: flex; justify-content: space-between; gap: 12px; padding: 8px 2px 0; color: var(--dim); font-size: .7rem; line-height: 1.4; }
-.recap-inspector { position: sticky; top: 12px; min-width: 0; overflow: hidden; border: 1px solid var(--recap-line); border-radius: 15px; background: color-mix(in srgb, var(--surface) 96%, var(--accent) 1%); }
+.recap-preview-caption { display: flex; justify-content: space-between; gap: 12px; padding: 8px 2px 0; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+.recap-inspector { position: sticky; top: 12px; min-width: 0; max-height: calc(100dvh - 110px); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--recap-line); border-radius: 13px; background: color-mix(in srgb, var(--surface) 96%, var(--accent) 1%); }
 .recap-inspector-heading { padding: 15px 16px 12px; border-bottom: 1px solid var(--border-soft); }
 .recap-inspector-heading h2 { margin: 0; font-size: .91rem; font-weight: 600; letter-spacing: -.01em; }
 .recap-inspector-heading p { margin: 4px 0 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
@@ -121,7 +126,7 @@
 .recap-delete-all-actions .button { min-height: 40px; }
 .recap-save-error { margin: 8px 0 0; color: var(--danger); font-size: .69rem; line-height: 1.4; }
 .recap-export-status { margin: 8px 0 0; color: var(--muted); font-size: .7rem; }
-@media (max-width: 790px) {
+@media (max-width: 920px) {
   .recap-page { padding: 20px 16px 38px; }
   .recap-heading { align-items: flex-start; gap: 10px; }
   .recap-count { padding-top: 3px; }
@@ -138,7 +143,7 @@
   .recap-editor-topbar { align-items: flex-start; }
   .recap-editor-actions { gap: 2px; }
   .recap-editor-actions .button { min-height: 36px; padding: 5px 8px; font-size: .7rem; }
-  .recap-stage { min-height: 47vh; padding: 12px; }
+  .recap-stage { min-height: 47vh; max-height: none; padding: 12px; }
   .recap-stage-canvas { max-height: 55vh; }
   .recap-preview-caption { font-size: .64rem; }
   .recap-saved-heading { align-items: flex-start; }

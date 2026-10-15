@@ -98,6 +98,7 @@
   "library.ui.withCovers": "with covers",
   "library.ui.ratedCountsByScore": "Rated work counts by score",
   "library.ui.scoreChartTitle": "{score} out of 10: {count} works",
+  "library.ui.scoreGroupHeading": "{score} / 10",
   "library.ui.scoreChartAria": "Score {score}: {count} works",
   "library.ui.previousGroup": "Previous group",
   "library.ui.nextGroup": "Next group",

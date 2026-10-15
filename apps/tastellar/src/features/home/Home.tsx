@@ -32,6 +32,7 @@ import {
   buildRecommendationPrompt,
   type RecommendationEntryEvidence,
   type RecommendationPromptOptions,
+  type RecommendationTierOrder,
 } from "./domain/prompt";
 const defaultCriteria = Object.fromEntries(
   Object.entries(defaultCriteriaMessages).map(([id, key]) => [id, t(key)]),
@@ -45,6 +46,7 @@ export interface HomeProps {
   removeAvatar: () => Promise<void>;
   criterionLabels?: Record<string, string>;
   libraryEntries?: LibraryEntry[];
+  rankingTiers?: readonly RecommendationTierOrder[] | null;
   mediaTypes?: Array<Pick<LibraryMediaType, "id" | "name" | "criterionIds">>;
 }
 export function Home({
@@ -56,9 +58,12 @@ export function Home({
   removeAvatar,
   criterionLabels = defaultCriteria,
   libraryEntries,
+  rankingTiers,
   mediaTypes = [],
 }: HomeProps) {
   const libraryEntryData = libraryEntries ?? [];
+  const recommendationOrderLoading =
+    libraryEntries !== undefined && rankingTiers == null;
   const [editor, setEditor] = useState<
     "profile" | "qualities" | "guidelines" | "prompt" | "help" | null
   >(null);
@@ -186,7 +191,10 @@ export function Home({
               <SlidersHorizontal size={17} />
             </button>
           </div>
-          <div className="segmented" aria-label={t("home.chartSource")}>
+          <div
+            className="segmented taste-source-tabs"
+            aria-label={t("home.chartSource")}
+          >
             <button
               aria-pressed={explicit}
               className={explicit ? "selected" : ""}
@@ -321,6 +329,8 @@ export function Home({
           <div>
             <button
               className="button primary"
+              disabled={recommendationOrderLoading}
+              aria-busy={recommendationOrderLoading}
               onClick={() => setEditor("prompt")}
             >
               <Sparkles size={15} />
@@ -335,9 +345,15 @@ export function Home({
               <HelpCircle size={17} />
             </button>
           </div>
-          <span>
-            <ShieldCheck size={12} />
-            {t("home.promptFootnote")}
+          <span role={recommendationOrderLoading ? "status" : undefined}>
+            {recommendationOrderLoading ? (
+              t("home.promptRankingOrderLoading")
+            ) : (
+              <>
+                <ShieldCheck size={12} />
+                {t("home.promptFootnote")}
+              </>
+            )}
           </span>
         </div>
       </section>
@@ -376,6 +392,7 @@ export function Home({
           state={state}
           criterionLabels={criterionLabels}
           entries={recommendationEntries}
+          rankingTiers={rankingTiers}
           libraryEntryCount={libraryEntries?.length ?? null}
           onClose={() => setEditor(null)}
         />
@@ -772,12 +789,14 @@ function PromptPreview({
   state,
   criterionLabels,
   entries,
+  rankingTiers,
   libraryEntryCount,
   onClose,
 }: {
   state: HomeState;
   criterionLabels: Record<string, string>;
   entries: RecommendationEntryEvidence[];
+  rankingTiers: readonly RecommendationTierOrder[] | null | undefined;
   libraryEntryCount: number | null;
   onClose: () => void;
 }) {
@@ -799,6 +818,7 @@ function PromptPreview({
           tasteInputs: state.tasteInputs,
           criterionLabels,
           entries,
+          rankingTiers,
           libraryLoaded: libraryEntryCount !== null,
           options,
           message: t,

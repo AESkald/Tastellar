@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useId, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -624,7 +624,6 @@ function Histogram({
   selected: number | null;
   onSelect: (score: number) => void;
 }) {
-  const gradientId = `analytics-rating-gradient-${useId().replaceAll(":", "")}`;
   const width = 820;
   const height = 284;
   const left = 45;
@@ -641,7 +640,6 @@ function Histogram({
     <>
     <div className="analytics-chart-wrap">
       <svg className="analytics-chart analytics-histogram" viewBox={`0 0 ${width} ${height}`} role="group" aria-label={t("analytics.chart.ratingDistribution", { count: total })}>
-        <defs><linearGradient id={gradientId} x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stopColor="var(--analytics-violet)" stopOpacity=".48" /><stop offset="100%" stopColor="var(--analytics-cyan)" stopOpacity=".94" /></linearGradient></defs>
         {axis.ticks.map((tick) => {
           const y = top + plotHeight - (tick / axis.top) * plotHeight;
           return <g key={tick}><line x1={left} x2={width - right} y1={y} y2={y} className="analytics-chart-grid" /><text x={left - 10} y={y + 4} textAnchor="end" className="analytics-axis-text analytics-y-tick">{tick}</text></g>;
@@ -656,7 +654,7 @@ function Histogram({
           const label = t("analytics.chart.countShareAtScore", { score, count, percentage: formatNumber(percentage, 1) });
           return <g key={score} data-score={score} data-count={count} className={`analytics-histogram-bin${selected === score ? " selected" : ""}`} role="button" tabIndex={0} aria-label={label} aria-pressed={selected === score} onClick={() => onSelect(score)} onKeyDown={(event) => focusKey(event, () => onSelect(score))}>
             <rect className="analytics-bin-hit" x={left + position * step + 1} y={top} width={step - 2} height={plotHeight + 49} rx="5" />
-            <rect className="analytics-bin-bar" x={x} y={y} width={barWidth} height={Math.max(3, barHeight)} rx="7" style={{ fill: `url(#${gradientId})` }}><title>{label}</title></rect>
+            <rect className="analytics-bin-bar" x={x} y={y} width={barWidth} height={Math.max(3, barHeight)} rx="7"><title>{label}</title></rect>
             <text x={x + barWidth / 2} y={y - 7} className="analytics-bin-count" textAnchor="middle">{count}</text>
             <text x={left + position * step + step / 2} y={top + plotHeight + 21} className="analytics-axis-text" textAnchor="middle">{score}</text>
             <text x={left + position * step + step / 2} y={top + plotHeight + 36} className="analytics-bin-share" textAnchor="middle">{formatNumber(percentage, 1)}%</text>

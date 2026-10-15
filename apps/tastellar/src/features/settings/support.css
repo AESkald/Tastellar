@@ -4,9 +4,9 @@
   align-items: flex-start;
   gap: 14px;
   margin-top: 28px;
-  padding: 20px 22px;
+  padding: 20px;
   border: 1px solid var(--accent-border);
-  border-radius: 12px;
+  border-radius: var(--radius-card);
   background: color-mix(in srgb, var(--accent) 5%, var(--surface));
   text-align: left;
 }
@@ -37,7 +37,7 @@
 .about-credits h3 {
   margin: 0 0 8px;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   font-weight: 650;
   letter-spacing: 0.07em;
   text-align: center;
@@ -56,8 +56,8 @@
   justify-content: space-between;
   gap: 12px;
   color: var(--muted);
-  font-size: 0.69rem;
-  line-height: 1.4;
+  font-size: 0.8rem;
+  line-height: 1.5;
 }
 .provider-credit-list > li > a:not(.tmdb-logo-link) {
   display: inline-flex;
@@ -70,33 +70,11 @@
 .provider-credit-list > li > a:hover {
   color: var(--accent);
 }
-.provider-credit-tmdb {
-  align-items: center !important;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.tmdb-logo-link {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  padding: 5px 8px;
-  border-radius: 5px;
-  background: #fff;
-}
-.tmdb-logo-link img {
-  display: block;
-  width: 88px;
-  max-height: 22px;
-  object-fit: contain;
-}
-.provider-credit-tmdb p {
-  max-width: 300px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.64rem;
-  line-height: 1.4;
-  text-align: right;
+.provider-credit-disclaimer {
+  margin: 9px 0 0;
+  color: var(--dim);
+  font-size: 0.74rem;
+  line-height: 1.5;
 }
 .settings-support-card > svg {
   flex: 0 0 auto;
@@ -106,22 +84,22 @@
 .settings-support-card h3 {
   margin: 0;
   color: var(--text);
-  font-size: 0.86rem;
+  font-size: 0.9rem;
   font-weight: 600;
 }
 .settings-support-card p {
   max-width: 360px;
   margin: 6px 0 10px;
   color: var(--muted);
-  font-size: 0.72rem;
-  line-height: 1.55;
+  font-size: 0.84rem;
+  line-height: 1.6;
 }
 .settings-support-card a {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   color: var(--accent);
-  font-size: 0.72rem;
+  font-size: 0.84rem;
   font-weight: 600;
 }
 .settings-support-card a:hover {
@@ -131,7 +109,7 @@
   display: block;
   margin-top: 4px;
   color: var(--dim);
-  font-size: 0.64rem;
+  font-size: 0.74rem;
   font-weight: 500;
 }
 .support-reminder {
@@ -141,8 +119,8 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 14px;
-  padding: 10px 22px;
+  gap: 12px;
+  padding: 9px 20px;
   color: var(--text);
   border-bottom: 1px solid var(--accent-border);
   background: color-mix(in srgb, var(--accent) 5%, var(--surface));
@@ -173,25 +151,25 @@
 .support-reminder-copy p {
   margin: 5px 0 0;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.84rem;
   line-height: 1.5;
 }
 .support-reminder-close {
-  width: 27px;
-  height: 27px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   color: var(--dim);
-  border-radius: 7px;
+  border-radius: 9px;
 }
 .support-reminder-close:hover {
   color: var(--text);
   background: var(--surface);
 }
 .support-reminder-action {
-  min-height: 34px;
-  padding: 7px 11px;
-  font-size: 0.68rem;
+  min-height: 38px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
 }
 @keyframes support-reminder-enter {
   from {

@@ -1,5 +1,18 @@
 .app-tab {
   position: relative;
+  border-radius: 9px;
+}
+
+.app-tab:hover:not(.active) {
+  background: color-mix(in srgb, var(--surface-hover) 66%, transparent);
+  color: var(--text);
+}
+
+.app-tab.active {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-hover));
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 75%, transparent);
+  color: var(--text);
 }
 
 .tab-strip {
@@ -20,6 +33,7 @@
   cursor: grab;
   min-width: 0;
   user-select: none;
+  min-height: 36px;
 }
 
 .app-tab > [role="tab"]:active {

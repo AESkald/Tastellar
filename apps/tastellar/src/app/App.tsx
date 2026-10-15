@@ -128,6 +128,14 @@ export function App() {
     () => rankingState?.tiers.map(({ score, placedIds }) => ({ score, placedIds })) ?? null,
     [rankingState],
   );
+  const mappedRecommendationTiers = useMemo(
+    () => rankingState?.tiers.map(({ score, placedIds, unplacedIds }) => ({
+      score,
+      placedIds,
+      unplacedIds,
+    })) ?? null,
+    [rankingState],
+  );
   const libraryRankingTiers =
     rankingState &&
     libraryState &&
@@ -135,6 +143,9 @@ export function App() {
       rankingState.library.entries === libraryState.entries)
       ? mappedRankingTiers
       : null;
+  const libraryRecommendationTiers = libraryRankingTiers
+    ? mappedRecommendationTiers
+    : null;
   const [rankingSidebarDropTarget, setRankingSidebarDropTarget] = useState<number | null>(null);
   const [selectedRankingEntryId, setSelectedRankingEntryId] = useState<string | null>(null);
   const [rankingSearch, setRankingSearch] = useState("");
@@ -609,7 +620,7 @@ export function App() {
     workspace?.tabs[0];
   useEffect(() => {
     if (
-      (activeTab?.section === "ranking" || activeTab?.section === "analytics" || activeTab?.section === "recap") &&
+      (activeTab?.section === "home" || activeTab?.section === "ranking" || activeTab?.section === "analytics" || activeTab?.section === "recap") &&
       libraryState &&
       rankingState?.revision !== libraryState.revision
     ) {
@@ -1576,6 +1587,7 @@ export function App() {
                     : undefined
                 }
                 libraryEntries={libraryState?.entries}
+                rankingTiers={libraryRecommendationTiers}
                 mediaTypes={
                   libraryState?.mediaTypes
                     .filter((item) => !item.archivedAt)
